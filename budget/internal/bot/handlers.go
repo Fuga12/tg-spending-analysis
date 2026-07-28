@@ -75,6 +75,7 @@ func (b *Bot) onText(c tele.Context) error {
 	}
 
 	now := time.Now()
+	partner := b.partnerName(ctx, sender.ID)
 	for _, item := range res.Items {
 		tx, err := b.save(ctx, sender.ID, text, item, cats, now)
 		if err != nil {
@@ -86,7 +87,7 @@ func (b *Bot) onText(c tele.Context) error {
 		}
 		// Ошибка отправки одного ответа не должна лишать пользователя
 		// остальных: транзакции уже в базе, а кнопки приходят только с ними.
-		if err := c.Send(transactionLine(tx, now, b.cfg.TZ), keyboardFor(tx)); err != nil {
+		if err := c.Send(transactionLine(tx, now, b.cfg.TZ, partner), keyboardFor(tx, partner)); err != nil {
 			b.log.Error("не отправил ответ по трате", "err", err, "tx", tx.ID)
 		}
 	}

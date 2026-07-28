@@ -1,12 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { api, Category, Conflict, Tx } from "./api";
-import { money } from "./format";
-
-const BENEFICIARIES = [
-  { value: "payer", label: "мне" },
-  { value: "partner", label: "ей" },
-  { value: "both", label: "нам" },
-] as const;
+import { api, Category, Conflict, Me, Tx } from "./api";
+import { money, otherID, personLabel } from "./format";
 
 const KINDS = [
   { value: "expense", label: "трата" },
@@ -21,7 +15,7 @@ type Props = {
   defaultDay: string;
   /** Сегодняшний день — для чипов «сегодня/вчера» и потолка даты. */
   today: string;
-  partnerName?: string;
+  me: Me | null;
   onClose: () => void;
   onSaved: (tx: Tx) => void;
   onDeleted: (tx: Tx) => void;
@@ -31,7 +25,7 @@ type Props = {
  * Карточка операции: лист снизу на телефоне, модалка на десктопе.
  * Здесь правится сумма и дата — то, чего в боте нет вовсе.
  */
-export default function Sheet({ tx, categories, defaultDay, today, partnerName, onClose, onSaved, onDeleted }: Props) {
+export default function Sheet({ tx, categories, defaultDay, today, me, onClose, onSaved, onDeleted }: Props) {
   const [amount, setAmount] = useState(tx?.amount ?? "");
   const [description, setDescription] = useState(tx?.description ?? "");
   const [categoryID, setCategoryID] = useState<number | null>(tx?.category_id ?? null);
@@ -50,6 +44,15 @@ export default function Sheet({ tx, categories, defaultDay, today, partnerName, 
   // видно, чья это трата, — но полей не блокирует.
   const readOnly = false;
   const partners = tx !== null && !tx.mine;
+  // Кнопки «на кого» подписаны именами и считаются от плательщика: правит
+  // запись кто угодно, а «payer» в ней — тот, кто платил, не тот, кто смотрит.
+  const payerID = tx?.payer_id ?? me?.id ?? 0;
+  const beneficiaries = [
+    { value: "payer" as const, label: personLabel(payerID, me) ?? "плательщику" },
+    { value: "partner" as const, label: personLabel(otherID(payerID, me), me) ?? "партнёру" },
+    { value: "both" as const, label: "нам" },
+  ];
+
   // Сутки вперёд сервер разрешает (webapp.md §4): пусть и поле разрешает.
   const maxDay = shiftDay(today, 1);
   const transfer = kind === "transfer";
@@ -205,7 +208,10 @@ export default function Sheet({ tx, categories, defaultDay, today, partnerName, 
         </h2>
 
         {partners && (
-          <div className="sheet__badge">Трата {partnerName ?? "партнёра"} — правки увидит и она</div>
+          <div className="sheet__badge">
+            Автор записи — {tx && !tx.mine ? (me?.partner?.name ?? "партнёр") : (me?.name ?? "я")}.
+            Правки видны обоим.
+          </div>
         )}
 
         <label className="sheet__amount">
@@ -246,7 +252,7 @@ export default function Sheet({ tx, categories, defaultDay, today, partnerName, 
                     setCategoryID(next);
                     // Умолчание категории подставляем только новой записи:
                     // у существующей бенефициар уже выбран человеком.
-                    if (next !== null && !tx) setBeneficiary(c.beneficiary);
+                    if (next !== null && !tx) setBeneficiary(categoryDefault(c, payerID));
                   }}
                 >
                   {c.name}
@@ -259,7 +265,7 @@ export default function Sheet({ tx, categories, defaultDay, today, partnerName, 
         {!transfer && (
           <Field label="На кого">
             <Segmented
-              options={BENEFICIARIES}
+              options={beneficiaries}
               value={beneficiary}
               disabled={readOnly}
               onChange={setBeneficiary}
@@ -357,6 +363,13 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       {children}
     </div>
   );
+}
+
+/** Умолчание категории в терминах записи: адресат-человек — это payer или
+ *  partner, смотря кто платит. */
+function categoryDefault(c: Category, payerID: number): "payer" | "partner" | "both" {
+  if (c.user_id === null) return c.beneficiary;
+  return c.user_id === payerID ? "payer" : "partner";
 }
 
 function Segmented<T extends string>({

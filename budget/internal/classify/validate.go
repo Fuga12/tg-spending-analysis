@@ -13,7 +13,10 @@ import (
 // Validate приводит ответ модели к тому, что можно записать в базу (§8).
 // Выполняется всегда, даже если ответ прошёл JSON-схему: схема гарантирует
 // форму, но не смысл.
-func Validate(raw []RawItem, text string, cats []storage.Category, log *slog.Logger) []Item {
+//
+// payerID нужен умолчаниям категорий: у категории адресатом может стоять
+// конкретный человек, а в транзакции хранится отношение к плательщику.
+func Validate(raw []RawItem, text string, cats []storage.Category, payerID int64, log *slog.Logger) []Item {
 	amounts := tokens.Extract(text)
 	out := make([]Item, 0, len(raw))
 
@@ -64,8 +67,10 @@ func Validate(raw []RawItem, text string, cats []storage.Category, log *slog.Log
 		// догадка модели, а умолчание категории: «Такси — на себя», «Продукты —
 		// на двоих» настраивается людьми под свои привычки и не меняется от
 		// формулировки к формулировке.
-		if !r.BeneficiaryStated && cat != nil && isBeneficiary(cat.DefaultBeneficiary) {
-			item.Beneficiary = cat.DefaultBeneficiary
+		if !r.BeneficiaryStated && cat != nil {
+			if def := cat.BeneficiaryFor(payerID); isBeneficiary(def) {
+				item.Beneficiary = def
+			}
 		}
 		if !isKind(item.Kind) {
 			item.Kind = KindExpense

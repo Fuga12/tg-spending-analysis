@@ -13,6 +13,23 @@ type Category struct {
 	// Hint уходит в описание категории внутри JSON-схемы: пояснения заметно
 	// поднимают точность разбора (plan.md §6).
 	Hint string
+
+	// DefaultUserID — адресат-человек, если он у категории есть. Перебивает
+	// DefaultBeneficiary: «Косметика — Уле» верно и когда платит не Уля.
+	DefaultUserID *int64
+}
+
+// BeneficiaryFor переводит умолчание категории в payer/partner/both для
+// конкретного плательщика. Адресат-человек разрешается здесь: в транзакции
+// хранится отношение к плательщику, а не имя.
+func (c Category) BeneficiaryFor(payerID int64) string {
+	if c.DefaultUserID == nil {
+		return c.DefaultBeneficiary
+	}
+	if *c.DefaultUserID == payerID {
+		return BenPayer
+	}
+	return BenPartner
 }
 
 // WordHit — как слово разрешилось в категорию.
@@ -31,10 +48,17 @@ const (
 	SourceSeed   = "seed"
 )
 
+// На кого потрачено. Значения те же, что в classify.Ben*, но зависеть от
+// classify отсюда нельзя: она сама зависит от storage.
+const (
+	BenPayer   = "payer"
+	BenPartner = "partner"
+)
+
 // Categories возвращает все категории в порядке отображения.
 func (s *Store) Categories(ctx context.Context) ([]Category, error) {
 	rows, err := s.pool.Query(ctx, `
-		select id, name, default_beneficiary, sort_order, hint
+		select id, name, default_beneficiary, sort_order, hint, default_user_id
 		from categories order by sort_order, id`)
 	if err != nil {
 		return nil, err
@@ -44,7 +68,7 @@ func (s *Store) Categories(ctx context.Context) ([]Category, error) {
 	var out []Category
 	for rows.Next() {
 		var c Category
-		if err := rows.Scan(&c.ID, &c.Name, &c.DefaultBeneficiary, &c.SortOrder, &c.Hint); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.DefaultBeneficiary, &c.SortOrder, &c.Hint, &c.DefaultUserID); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -112,10 +136,10 @@ func (s *Store) UpsertWord(ctx context.Context, userID int64, word string, categ
 
 // UpdateCategory правит имя и подсказку. Добавлять и удалять категории
 // нельзя: их ровно четырнадцать (plan.md §14), а список уходит в enum схемы.
-func (s *Store) UpdateCategory(ctx context.Context, id int32, name, hint, beneficiary string) (bool, error) {
+func (s *Store) UpdateCategory(ctx context.Context, id int32, name, hint, beneficiary string, userID *int64) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
-		update categories set name = $2, hint = $3, default_beneficiary = $4
-		where id = $1`, id, name, hint, beneficiary)
+		update categories set name = $2, hint = $3, default_beneficiary = $4, default_user_id = $5
+		where id = $1`, id, name, hint, beneficiary, userID)
 	if err != nil {
 		return false, err
 	}
@@ -127,12 +151,12 @@ func (s *Store) UpdateCategory(ctx context.Context, id int32, name, hint, benefi
 // plan.md §14 запрещал больше четырнадцати — ограничение снято по решению
 // заказчика. Цена известна: список уходит в enum JSON-схемы, и каждая
 // категория делает промпт чуть длиннее, а выбор модели чуть труднее.
-func (s *Store) CreateCategory(ctx context.Context, name, hint, beneficiary string) (Category, error) {
-	c := Category{Name: name, Hint: hint, DefaultBeneficiary: beneficiary}
+func (s *Store) CreateCategory(ctx context.Context, name, hint, beneficiary string, userID *int64) (Category, error) {
+	c := Category{Name: name, Hint: hint, DefaultBeneficiary: beneficiary, DefaultUserID: userID}
 	err := s.pool.QueryRow(ctx, `
-		insert into categories (name, default_beneficiary, sort_order, hint)
-		values ($1, $2, (select coalesce(max(sort_order), 0) + 10 from categories), $3)
-		returning id, sort_order`, name, beneficiary, hint).Scan(&c.ID, &c.SortOrder)
+		insert into categories (name, default_beneficiary, sort_order, hint, default_user_id)
+		values ($1, $2, (select coalesce(max(sort_order), 0) + 10 from categories), $3, $4)
+		returning id, sort_order`, name, beneficiary, hint, userID).Scan(&c.ID, &c.SortOrder)
 	return c, err
 }
 

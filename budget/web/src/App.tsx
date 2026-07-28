@@ -399,7 +399,7 @@ export default function App() {
           tx={editing}
           categories={categories}
           today={today}
-          partnerName={me?.partner?.name}
+          me={me}
           defaultDay={editing ? editing.day : defaultDayFor(route, today)}
           onClose={() => {
             setEditing(null);
@@ -429,6 +429,7 @@ export default function App() {
       {editingCats && (
         <Categories
           categories={categories}
+          me={me}
           onClose={() => setEditingCats(false)}
           onSaved={(c) => {
             setCategories((prev) =>
@@ -530,6 +531,8 @@ function Row({ tx, me, onOpen }: { tx: Tx; me: Me | null; onOpen: () => void }) 
             ? "не расход"
             : `${tx.needs_review ? "проверить" : tx.category || "без категории"} · ${beneficiaryLabel(
                 tx.beneficiary,
+                tx.payer_id,
+                me,
               )}`}
         </div>
       </div>

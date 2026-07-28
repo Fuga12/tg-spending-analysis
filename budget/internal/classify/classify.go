@@ -170,7 +170,7 @@ func (s *Service) Classify(ctx context.Context, userID int64, text string) (*Res
 		return s.degrade(text, amounts, ReasonNoAnswer), nil
 	}
 
-	items := Validate(raw, text, cats, s.log)
+	items := Validate(raw, text, cats, userID, s.log)
 	if len(items) == 0 {
 		s.log.Warn("после валидации не осталось элементов", "fast_path", false, "user_id", userID)
 		return s.degrade(text, amounts, ReasonUnusable), nil

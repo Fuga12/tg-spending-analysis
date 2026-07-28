@@ -12,12 +12,23 @@ export class Conflict extends Error {
 
 export type Beneficiary = "payer" | "partner" | "both";
 
-export type Category = { id: number; name: string; beneficiary: Beneficiary; hint: string };
+export type Category = {
+  id: number;
+  name: string;
+  beneficiary: Beneficiary;
+  hint: string;
+  /** Адресат-человек. Заполнен — перебивает beneficiary. */
+  user_id: number | null;
+};
+
+export type Person = { id: number; name: string; dative: string };
 
 export type Me = {
   id: number;
   name: string;
-  partner: { id: number; name: string } | null;
+  /** «Илье», «Уле» — падеж считает сервер, чтобы правила жили в одном месте. */
+  dative: string;
+  partner: Person | null;
 };
 
 export type Tx = {
@@ -106,10 +117,18 @@ export const api = {
 
   categories: () => get<Category[]>("/api/categories"),
 
-  patchCategory: (id: number, body: { name: string; hint: string; beneficiary: string }) =>
+  patchCategory: (
+    id: number,
+    body: { name: string; hint: string; beneficiary: string; user_id: number | null },
+  ) =>
     send<Category>("PATCH", `/api/categories/${id}`, body),
 
-  createCategory: (body: { name: string; hint: string; beneficiary: string }) =>
+  createCategory: (body: {
+    name: string;
+    hint: string;
+    beneficiary: string;
+    user_id: number | null;
+  }) =>
     send<Category>("POST", "/api/categories", body),
 
   daily: (year: number, month: number) =>

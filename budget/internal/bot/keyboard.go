@@ -25,7 +25,7 @@ const (
 // Показываются только те варианты, которых сейчас нет: нажатие на уже
 // выбранный ничего не меняет, Telegram отвечает «message is not modified»,
 // и человек видит, что кнопка «не работает».
-func transactionKeyboard(txID int64, beneficiary string) *tele.ReplyMarkup {
+func transactionKeyboard(txID int64, beneficiary, partner string) *tele.ReplyMarkup {
 	m := &tele.ReplyMarkup{}
 	id := strconv.FormatInt(txID, 10)
 
@@ -34,7 +34,7 @@ func transactionKeyboard(txID int64, beneficiary string) *tele.ReplyMarkup {
 		value, label, unique string
 	}{
 		{classify.BenPayer, "себе", cbPayer},
-		{classify.BenPartner, "ей", cbPartner},
+		{classify.BenPartner, partnerLabel(partner), cbPartner},
 		{classify.BenBoth, "на двоих", cbBoth},
 	} {
 		if b.value != beneficiary {
@@ -81,9 +81,9 @@ func categoryKeyboard(txID int64, cats []storage.Category) *tele.ReplyMarkup {
 }
 
 // keyboardFor выбирает клавиатуру по типу операции.
-func keyboardFor(t storage.Transaction) *tele.ReplyMarkup {
+func keyboardFor(t storage.Transaction, partner string) *tele.ReplyMarkup {
 	if t.Kind == classify.KindTransfer {
 		return transferKeyboard(t.ID)
 	}
-	return transactionKeyboard(t.ID, t.Beneficiary)
+	return transactionKeyboard(t.ID, t.Beneficiary, partner)
 }

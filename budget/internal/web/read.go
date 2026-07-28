@@ -311,6 +311,8 @@ type categoryView struct {
 	Name        string `json:"name"`
 	Beneficiary string `json:"beneficiary"`
 	Hint        string `json:"hint"`
+	// UserID — адресат-человек. Заполнен — перебивает Beneficiary.
+	UserID *int64 `json:"user_id"`
 }
 
 func (s *Server) handleCategories(w http.ResponseWriter, r *http.Request) {
@@ -323,7 +325,8 @@ func (s *Server) handleCategories(w http.ResponseWriter, r *http.Request) {
 	out := make([]categoryView, 0, len(cats))
 	for _, c := range cats {
 		out = append(out, categoryView{
-			ID: c.ID, Name: c.Name, Beneficiary: c.DefaultBeneficiary, Hint: c.Hint,
+			ID: c.ID, Name: c.Name, Beneficiary: c.DefaultBeneficiary,
+			Hint: c.Hint, UserID: c.DefaultUserID,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

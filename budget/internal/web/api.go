@@ -2,6 +2,8 @@ package web
 
 import (
 	"net/http"
+
+	"budget/internal/people"
 )
 
 // meResponse — кто смотрит и кто партнёр. Фронт по этому ответу назначает
@@ -9,12 +11,16 @@ import (
 type meResponse struct {
 	ID      int64  `json:"id"`
 	Name    string `json:"name"`
+	Dative  string `json:"dative"`
 	Partner *user  `json:"partner"`
 }
 
 type user struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
+	// Dative — «Уле», «Илье». Подписи «на кого потрачено» читаются только
+	// в дательном, а склонять имена на фронте — плодить вторую копию правил.
+	Dative string `json:"dative"`
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -31,13 +37,13 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	for _, u := range users {
 		switch {
 		case u.ID == me:
-			resp.Name = u.Name
+			resp.Name, resp.Dative = u.Name, people.Dative(u.Name)
 		case s.cfg.IsAllowed(u.ID) && resp.Partner == nil:
-			resp.Partner = &user{ID: u.ID, Name: u.Name}
+			resp.Partner = &user{ID: u.ID, Name: u.Name, Dative: people.Dative(u.Name)}
 		}
 	}
 	if resp.Name == "" {
-		resp.Name = "Я"
+		resp.Name, resp.Dative = "Я", "мне"
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

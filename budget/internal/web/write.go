@@ -422,6 +422,8 @@ type categoryPatch struct {
 	Name        string `json:"name"`
 	Hint        string `json:"hint"`
 	Beneficiary string `json:"beneficiary"`
+	// UserID — адресат-человек вместо относительного умолчания. null снимает.
+	UserID *int64 `json:"user_id"`
 }
 
 // Границы: имя в enum схемы, подсказка в описание поля. Длинные строки
@@ -476,7 +478,13 @@ func (s *Server) handleCategoryPatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	updated, err := s.store.UpdateCategory(r.Context(), int32(id), name, hint, beneficiary)
+	target, ok := s.categoryTarget(body.UserID)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "этого человека нет в бюджете")
+		return
+	}
+
+	updated, err := s.store.UpdateCategory(r.Context(), int32(id), name, hint, beneficiary, target)
 	if err != nil {
 		s.log.Error("правка категории", "err", err, "id", id)
 		writeError(w, http.StatusInternalServerError, "база не отвечает")
@@ -489,7 +497,7 @@ func (s *Server) handleCategoryPatch(w http.ResponseWriter, r *http.Request) {
 	s.forgetStaleWords(r)
 	s.log.Info("категория изменена", "id", id, "name", name, "по умолчанию", beneficiary)
 	writeJSON(w, http.StatusOK, categoryView{
-		ID: int32(id), Name: name, Hint: hint, Beneficiary: beneficiary,
+		ID: int32(id), Name: name, Hint: hint, Beneficiary: beneficiary, UserID: target,
 	})
 }
 
@@ -541,7 +549,13 @@ func (s *Server) handleCategoryCreate(w http.ResponseWriter, r *http.Request) {
 		beneficiary = classify.BenBoth
 	}
 
-	created, err := s.store.CreateCategory(r.Context(), name, hint, beneficiary)
+	target, ok := s.categoryTarget(body.UserID)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "этого человека нет в бюджете")
+		return
+	}
+
+	created, err := s.store.CreateCategory(r.Context(), name, hint, beneficiary, target)
 	if err != nil {
 		s.log.Error("создание категории", "err", err)
 		writeError(w, http.StatusInternalServerError, "не смог создать")
@@ -551,8 +565,20 @@ func (s *Server) handleCategoryCreate(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("категория создана", "id", created.ID, "name", name)
 	writeJSON(w, http.StatusCreated, categoryView{
 		ID: created.ID, Name: created.Name, Hint: created.Hint,
-		Beneficiary: created.DefaultBeneficiary,
+		Beneficiary: created.DefaultBeneficiary, UserID: created.DefaultUserID,
 	})
+}
+
+// categoryTarget проверяет адресата-человека: чужой id в умолчании категории
+// означал бы траты на того, кого в бюджете нет.
+func (s *Server) categoryTarget(id *int64) (*int64, bool) {
+	if id == nil {
+		return nil, true
+	}
+	if !s.cfg.IsAllowed(*id) {
+		return nil, false
+	}
+	return id, true
 }
 
 // forgetStaleWords сбрасывает догадки модели после правки списка категорий.

@@ -78,7 +78,7 @@ func (s *Service) resolveFromCache(
 
 	ben := best.Beneficiary
 	if ben == "" {
-		ben = cat.DefaultBeneficiary
+		ben = cat.BeneficiaryFor(userID)
 	}
 
 	id := cat.ID

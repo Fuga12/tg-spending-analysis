@@ -12,7 +12,7 @@ type User struct {
 func (s *Store) UpsertUser(ctx context.Context, id int64, name string) error {
 	_, err := s.pool.Exec(ctx, `
 		insert into users (id, name) values ($1, $2)
-		on conflict (id) do update set name = excluded.name`, id, name)
+		on conflict (id) do nothing`, id, name)
 	return err
 }
 

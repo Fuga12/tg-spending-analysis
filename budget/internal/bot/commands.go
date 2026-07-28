@@ -124,10 +124,15 @@ func (b *Bot) onCategories(c tele.Context) error {
 		return c.Send("База не отвечает, попробуй ещё раз.")
 	}
 
+	users, err := b.store.Users(ctx)
+	if err != nil {
+		b.log.Warn("не прочитал участников", "err", err)
+	}
+
 	var sb strings.Builder
 	sb.WriteString("Категории\n")
 	for _, cat := range cats {
-		fmt.Fprintf(&sb, "  %s · %s\n", cat.Name, beneficiaryLabel(cat.DefaultBeneficiary))
+		fmt.Fprintf(&sb, "  %s · %s\n", cat.Name, categoryDefault(cat, users))
 	}
 	return c.Send(strings.TrimRight(sb.String(), "\n"))
 }

@@ -1,6 +1,8 @@
 // Деньги приходят строками: в JSON число — это float64, а деньги через float
 // гонять нельзя.
 
+import type { Me } from "./api";
+
 const NBSP = " ";
 
 /** «1 200 ₽», без копеек, если их нет. */
@@ -59,8 +61,34 @@ export function todayFrom(list: { day: string }[]): string {
   return list.length && list[0].day > local ? list[0].day : local;
 }
 
-export const beneficiaryLabel = (b: string) =>
-  b === "payer" ? "на себя" : b === "partner" ? "на неё" : "на двоих";
+/**
+ * Кому досталась трата — по имени, а не «ей».
+ *
+ * «На неё» написано с точки зрения того, кто платил: на сайте видны записи
+ * обоих, и второй человек прочитает эти же слова про себя наоборот. Имена
+ * такой двусмысленности не допускают, а про себя понятнее всего «мне».
+ */
+export function beneficiaryLabel(beneficiary: string, payerID: number, me: Me | null): string {
+  if (beneficiary === "both") return "на двоих";
+  const target = beneficiary === "payer" ? payerID : otherID(payerID, me);
+  return personLabel(target, me) ?? (beneficiary === "payer" ? "на себя" : "партнёру");
+}
+
+/** Второй участник бюджета. */
+export function otherID(id: number, me: Me | null): number | null {
+  if (!me) return null;
+  if (id === me.id) return me.partner?.id ?? null;
+  if (id === me.partner?.id) return me.id;
+  return null;
+}
+
+/** Имя в дательном падеже, а для себя — «мне». null, если человек незнаком. */
+export function personLabel(id: number | null, me: Me | null): string | null {
+  if (id === null || !me) return null;
+  if (id === me.id) return "мне";
+  if (id === me.partner?.id) return me.partner.dative;
+  return null;
+}
 
 /** Инициалы: одной буквы мало, если у двоих имена на одну и ту же. */
 export function initials(name: string, other?: string): string {

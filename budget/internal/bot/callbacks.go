@@ -32,10 +32,10 @@ func (b *Bot) onBeneficiary(beneficiary string) tele.HandlerFunc {
 		tx.Beneficiary = beneficiary
 		classify.RememberManual(ctx, b.store, tx, b.log)
 
-		if err := b.edit(c, tx); err != nil {
+		if err := b.edit(ctx, c, tx); err != nil {
 			return err
 		}
-		return respond(c, "Теперь "+beneficiaryLabel(beneficiary))
+		return respond(c, "Теперь "+beneficiaryLabel(beneficiary, b.partnerName(ctx, tx.PayerID)))
 	}
 }
 
@@ -54,7 +54,8 @@ func (b *Bot) onCategoryOpen(c tele.Context) error {
 		b.log.Error("чтение категорий", "err", err)
 		return respond(c, "База не отвечает")
 	}
-	if err := editMessage(c, transactionLine(tx, time.Now(), b.cfg.TZ), categoryKeyboard(tx.ID, cats)); err != nil {
+	line := transactionLine(tx, time.Now(), b.cfg.TZ, b.partnerName(ctx, tx.PayerID))
+	if err := editMessage(c, line, categoryKeyboard(tx.ID, cats)); err != nil {
 		return err
 	}
 	return c.Respond()
@@ -96,7 +97,7 @@ func (b *Bot) onCategoryPick(c tele.Context) error {
 	// tx.NeedsClassification говорит, что описание собрано из сырого текста.
 	tx.NeedsClassification = false
 
-	if err := b.edit(c, tx); err != nil {
+	if err := b.edit(ctx, c, tx); err != nil {
 		return err
 	}
 	return c.Respond()
@@ -147,8 +148,11 @@ func (b *Bot) txFromCallback(ctx context.Context, c tele.Context) (storage.Trans
 }
 
 // edit переписывает исходное сообщение, а не шлёт новое (§9).
-func (b *Bot) edit(c tele.Context, tx storage.Transaction) error {
-	return editMessage(c, transactionLine(tx, time.Now(), b.cfg.TZ), keyboardFor(tx))
+func (b *Bot) edit(ctx context.Context, c tele.Context, tx storage.Transaction) error {
+	// Подписи собираются от лица плательщика: правит запись кто угодно,
+	// а «на себя» и имя партнёра в ней относятся к тому, кто платил.
+	partner := b.partnerName(ctx, tx.PayerID)
+	return editMessage(c, transactionLine(tx, time.Now(), b.cfg.TZ, partner), keyboardFor(tx, partner))
 }
 
 // editMessage правит сообщение, считая «текст не изменился» нормальным
