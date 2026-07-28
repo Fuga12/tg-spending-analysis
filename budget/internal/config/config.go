@@ -185,10 +185,14 @@ func LoadWeb() (*Config, error) {
 	}
 	c.TZ = loc
 
-	if ids := strings.TrimSpace(os.Getenv("ALLOWED_USER_IDS")); ids != "" {
-		if c.AllowedUserIDs, err = parseIDs(ids); err != nil {
-			return nil, fmt.Errorf("ALLOWED_USER_IDS: %w", err)
-		}
+	// Без whitelist веб стартует, но не пускает никого — и при этом на каждом
+	// запросе с живой cookie убивает сессии. Молча наполовину работать нельзя.
+	ids := strings.TrimSpace(os.Getenv("ALLOWED_USER_IDS"))
+	if ids == "" {
+		return nil, errors.New("не задана переменная окружения ALLOWED_USER_IDS")
+	}
+	if c.AllowedUserIDs, err = parseIDs(ids); err != nil {
+		return nil, fmt.Errorf("ALLOWED_USER_IDS: %w", err)
 	}
 	return c, nil
 }

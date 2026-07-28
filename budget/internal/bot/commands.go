@@ -152,6 +152,11 @@ func (b *Bot) onLogin(c tele.Context) error {
 	if !b.cfg.WebEnabled() {
 		return c.Send("Веб-интерфейс не настроен.")
 	}
+	// Ссылка даёт полный доступ к истории трат. В группе её увидят все —
+	// и первый успевший войдёт под автором команды.
+	if chat := c.Chat(); chat == nil || chat.Type != tele.ChatPrivate {
+		return c.Send("Ссылку на сайт пришлю только в личку — напиши мне туда.")
+	}
 
 	ctx, cancel := b.ctx()
 	defer cancel()
@@ -175,6 +180,9 @@ func (b *Bot) onLogin(c tele.Context) error {
 	b.log.Info("выдана ссылка входа", "user_id", sender.ID)
 	// Ссылка одноразовая и живёт пять минут — предупреждаем прямо здесь,
 	// чтобы её не сохраняли в закладки.
-	return c.Send(auth.LoginURL(b.cfg.WebBaseURL, token) +
-		"\n\nСсылка одна на один вход и живёт 5 минут. Нужна новая — снова /вход.")
+	// Без NoPreview Telegram сходит по ссылке сам, чтобы построить превью, —
+	// и одноразовый токен сгорит до того, как по нему кликнут.
+	return c.Send(auth.LoginURL(b.cfg.WebBaseURL, token)+
+		"\n\nСсылка одна на один вход и живёт 5 минут. Нужна новая — снова /вход.",
+		tele.NoPreview)
 }

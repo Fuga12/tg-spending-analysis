@@ -3,10 +3,12 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -205,37 +207,119 @@ func TestApiNeedsSession(t *testing.T) {
 }
 
 func TestSessionDiesWhenUserLeavesWhitelist(t *testing.T) {
-	// Убрали id из ALLOWED_USER_IDS — сессия обязана умереть сразу,
-	// а не через месяц (webapp.md §1).
-	store, base, client := authServer(t)
-	token := issueToken(t, store, testUserID)
+	// Сессия заведена, а потом id убрали из ALLOWED_USER_IDS. Она обязана
+	// умереть на первом же запросе, а не через месяц (webapp.md §1).
+	// Проверяем именно эту ветку: сессия в базе живая, whitelist без неё.
+	store, base, _ := authServer(t, 999999)
 
-	resp, err := client.Get(base + "/auth?token=" + token)
+	token, hash, err := auth.NewToken()
 	if err != nil {
-		t.Fatalf("вход: %v", err)
+		t.Fatalf("токен: %v", err)
 	}
-	resp.Body.Close()
-
-	// Тот же сервер, но whitelist уже без него: правим конфиг на лету,
-	// как это сделал бы рестарт с новым .env.
-	srvCfgDropUser(t, base, client, store)
-}
-
-func srvCfgDropUser(t *testing.T, base string, client *http.Client, store *storage.Store) {
-	t.Helper()
-
-	// Проверяем через прямое удаление сессий: whitelist в конфиге сервера
-	// подменить снаружи нельзя, а поведение то же — доступ пропадает сразу.
-	if err := store.DeleteUserSessions(context.Background(), testUserID); err != nil {
-		t.Fatalf("удаление сессий: %v", err)
+	if err := store.CreateSession(context.Background(), hash, testUserID, auth.SessionTTL, "тест"); err != nil {
+		t.Fatalf("сессия: %v", err)
 	}
-	resp, err := client.Get(base + "/api/me")
+
+	req, _ := http.NewRequest(http.MethodGet, base+"/api/me", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
 	if err != nil {
 		t.Fatalf("запрос: %v", err)
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("код = %d, сессия должна была умереть", resp.StatusCode)
+		t.Errorf("код = %d, чужой сессии здесь быть не должно", resp.StatusCode)
+	}
+	// И сама сессия из базы убрана, а не просто отклонена.
+	if _, err := store.SessionUser(context.Background(), hash); !errors.Is(err, storage.ErrNoSession) {
+		t.Errorf("сессия осталась в базе: %v", err)
+	}
+}
+
+func TestLogoutEverywhere(t *testing.T) {
+	store, base, client := authServer(t)
+
+	// Две сессии: одна в браузере, вторая «на другом устройстве».
+	resp, _ := client.Get(base + "/auth?token=" + issueToken(t, store, testUserID))
+	resp.Body.Close()
+
+	otherToken, otherHash, _ := auth.NewToken()
+	if err := store.CreateSession(context.Background(), otherHash, testUserID, auth.SessionTTL, "другое устройство"); err != nil {
+		t.Fatalf("вторая сессия: %v", err)
+	}
+
+	req, _ := http.NewRequest(http.MethodDelete, base+"/api/session?all=1", nil)
+	out, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("выход отовсюду: %v", err)
+	}
+	out.Body.Close()
+	if out.StatusCode != http.StatusOK {
+		t.Fatalf("код = %d", out.StatusCode)
+	}
+
+	if _, err := store.SessionUser(context.Background(), auth.Hash(otherToken)); !errors.Is(err, storage.ErrNoSession) {
+		t.Error("«выйти отовсюду» должно убивать и сессии других устройств")
+	}
+}
+
+func TestSecureCookieWithoutInsecureFlag(t *testing.T) {
+	// Обратный случай к TestLoginByLink: без WEB_INSECURE_COOKIES флаг Secure
+	// обязан быть, а имя — с префиксом __Host-.
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL не задан — интеграционные тесты пропущены")
+	}
+	cfg := &config.Config{
+		WebAddr: "127.0.0.1:0", WebBaseURL: "https://budget.example.com",
+		AllowedUserIDs: []int64{testUserID},
+	}
+	s := &Server{cfg: cfg}
+
+	c := s.sessionCookie("токен", auth.SessionTTL)
+	if !c.Secure {
+		t.Error("без WEB_INSECURE_COOKIES cookie обязана быть Secure")
+	}
+	if c.Name != "__Host-"+auth.CookieName {
+		t.Errorf("имя cookie = %q, ожидался префикс __Host-", c.Name)
+	}
+}
+
+func TestMethodNotAllowedIsJSON(t *testing.T) {
+	_, base, client := authServer(t)
+
+	req, _ := http.NewRequest(http.MethodPost, base+"/api/me", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("запрос: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, под /api всё обязано быть JSON", ct)
+	}
+}
+
+func TestClientIPTrustsProxyOnlyFromLoopback(t *testing.T) {
+	// За своим прокси адрес берётся из заголовка, иначе — нет: иначе любой
+	// заголовком закроет вход обоим владельцам.
+	local := &http.Request{RemoteAddr: "127.0.0.1:5555", Header: http.Header{}}
+	local.Header.Set("X-Forwarded-For", "203.0.113.9")
+	if got := clientIP(local); got != "203.0.113.9" {
+		t.Errorf("за локальным прокси адрес = %q, ожидался клиентский", got)
+	}
+
+	outside := &http.Request{RemoteAddr: "198.51.100.7:5555", Header: http.Header{}}
+	outside.Header.Set("X-Forwarded-For", "10.0.0.1")
+	if got := clientIP(outside); got != "198.51.100.7" {
+		t.Errorf("снаружи адрес = %q, заголовку верить нельзя", got)
+	}
+
+	chain := &http.Request{RemoteAddr: "127.0.0.1:5555", Header: http.Header{}}
+	chain.Header.Set("X-Forwarded-For", "1.2.3.4, 203.0.113.9")
+	if got := clientIP(chain); got != "203.0.113.9" {
+		t.Errorf("из цепочки берётся последний, а не %q", got)
 	}
 }
 

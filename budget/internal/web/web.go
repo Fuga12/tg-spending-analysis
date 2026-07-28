@@ -59,10 +59,15 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/me", s.handleMe)
 	api.HandleFunc("DELETE /api/session", s.handleLogout)
+	// Свои заглушки на прочие методы: встроенный 405 у ServeMux — текстовый,
+	// а под /api всё обязано быть JSON (webapp.md §4).
+	api.HandleFunc("/api/me", methodNotAllowed)
+	api.HandleFunc("/api/session", methodNotAllowed)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /auth", s.handleAuth)
+	mux.HandleFunc("/auth", methodNotAllowed)
 	mux.Handle("/api/me", s.requireSession(api))
 	mux.Handle("/api/session", s.requireSession(api))
 	// Неизвестный /api/* обязан отвечать JSON-ошибкой, иначе фронт получит
@@ -182,6 +187,10 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		slog.Error("не отдал ответ", "err", err)
 	}
+}
+
+func methodNotAllowed(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusMethodNotAllowed, "метод "+r.Method+" здесь не работает")
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {

@@ -219,7 +219,9 @@ func printLoginLink(ctx context.Context, log *slog.Logger, userID int64) {
 	}
 	defer store.Close()
 
-	if err := store.UpsertUser(ctx, userID, "Я"); err != nil {
+	// Имя не трогаем: UpsertUser затёр бы настоящее имя партнёра на «Я»,
+	// и отчёты бота стали бы врать.
+	if err := store.EnsureUser(ctx, userID, "Я"); err != nil {
 		log.Error("пользователь", "err", err)
 		os.Exit(1)
 	}

@@ -8,7 +8,6 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"time"
@@ -42,11 +41,6 @@ func NewToken() (token string, hash []byte, err error) {
 func Hash(token string) []byte {
 	sum := sha256.Sum256([]byte(token))
 	return sum[:]
-}
-
-// SameHash сравнивает хэши за постоянное время.
-func SameHash(a, b []byte) bool {
-	return subtle.ConstantTimeCompare(a, b) == 1
 }
 
 // LoginURL собирает ссылку входа из публичного адреса сервиса.

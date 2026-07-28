@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -95,7 +96,7 @@ p{color:#c3c2b7;max-width:28em;padding:0 24px}</style>
 // вход будет молча не работать (webapp.md §1).
 func (s *Server) sessionCookie(token string, ttl time.Duration) *http.Cookie {
 	return &http.Cookie{
-		Name:     auth.CookieName,
+		Name:     s.cookieName(),
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
@@ -105,11 +106,21 @@ func (s *Server) sessionCookie(token string, ttl time.Duration) *http.Cookie {
 	}
 }
 
+// cookieName — с TLS берём префикс __Host-: он запрещает другим сервисам на
+// том же хосте (а рядом крутятся чужие контейнеры) подменять нашу cookie.
+// Префикс требует Secure, поэтому без TLS остаётся обычное имя.
+func (s *Server) cookieName() string {
+	if s.cfg.WebInsecureCookies {
+		return auth.CookieName
+	}
+	return "__Host-" + auth.CookieName
+}
+
 // requireSession пускает дальше только с живой сессией и только тех, кто
 // сейчас в whitelist.
 func (s *Server) requireSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie(auth.CookieName)
+		cookie, err := r.Cookie(s.cookieName())
 		if err != nil || cookie.Value == "" {
 			writeError(w, http.StatusUnauthorized, "нужен вход")
 			return
@@ -161,7 +172,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "не смог выйти")
 			return
 		}
-	} else if cookie, err := r.Cookie(auth.CookieName); err == nil {
+	} else if cookie, err := r.Cookie(s.cookieName()); err == nil {
 		if err := s.store.DeleteSession(r.Context(), auth.Hash(cookie.Value)); err != nil {
 			s.log.Error("выход", "err", err)
 			writeError(w, http.StatusInternalServerError, "не смог выйти")
@@ -177,9 +188,10 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 type rateLimiter struct {
 	limit int
 
-	mu      sync.Mutex
-	windows map[string]*window
-	now     func() time.Time
+	mu        sync.Mutex
+	windows   map[string]*window
+	lastSweep time.Time
+	now       func() time.Time
 }
 
 type window struct {
@@ -196,14 +208,21 @@ func (l *rateLimiter) allow(key string) bool {
 	defer l.mu.Unlock()
 
 	now := l.now()
-	w, ok := l.windows[key]
-	if !ok || now.Sub(w.started) >= time.Minute {
-		// Заодно подчищаем чужие протухшие окна, чтобы карта не росла вечно.
+
+	// Протухшие окна подчищаем не чаще раза в минуту: проход по всей карте
+	// на каждый новый адрес — это O(N²) под общим мьютексом, и поток запросов
+	// с разных адресов встанет колом вместе с ботом в том же процессе.
+	if now.Sub(l.lastSweep) >= time.Minute {
 		for k, old := range l.windows {
 			if now.Sub(old.started) >= time.Minute {
 				delete(l.windows, k)
 			}
 		}
+		l.lastSweep = now
+	}
+
+	w, ok := l.windows[key]
+	if !ok || now.Sub(w.started) >= time.Minute {
 		l.windows[key] = &window{started: now, count: 1}
 		return true
 	}
@@ -211,13 +230,27 @@ func (l *rateLimiter) allow(key string) bool {
 	return w.count <= l.limit
 }
 
-// clientIP — адрес без порта. За прокси адрес будет прокси; для домашнего
-// сервиса это приемлемо, а доверять X-Forwarded-For без настройки прокси
-// нельзя: заголовок подделывается тривиально.
+// clientIP — адрес, по которому считаются попытки входа.
+//
+// X-Forwarded-For подделывается тривиально, поэтому ему верим только когда
+// запрос пришёл с локального адреса, то есть от своего же реверс-прокси.
+// Без этого за прокси у всех клиентов один ключ, и посторонний десятью
+// запросами в минуту закрывает вход обоим владельцам.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			// Последний в цепочке — тот, кого видел наш прокси; всё, что
+			// левее, клиент мог написать сам.
+			parts := strings.Split(fwd, ",")
+			if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
+				return last
+			}
+		}
 	}
 	return host
 }
