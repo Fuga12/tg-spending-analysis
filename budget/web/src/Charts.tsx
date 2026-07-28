@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { DayPoint, Line, MonthPoint } from "./api";
-import { money } from "./format";
+import { money, plural } from "./format";
 
 /**
  * Графики нарисованы своим SVG по правилам webapp-design.md §6: тонкие марки,
@@ -35,11 +36,16 @@ export function MonthStrip({
         return (
           <button
             key={`${p.year}-${p.month}`}
-            className={`strip__item${on ? " strip__item--on" : ""}`}
+            className={`strip__item${on ? " strip__item--on" : ""}${value === 0 ? " strip__item--empty" : ""}`}
             onClick={() => onPick(p)}
-            title={money(p.amount)}
+            title={value === 0 ? "трат не было" : money(p.amount)}
           >
-            <span className="strip__bar" style={{ height: `${Math.max((value / max) * 100, 6)}%` }} />
+            {/* Пустой месяц — черта у основания, а не огрызок бара: иначе
+                шкала выглядит сломанной, а не пустой. */}
+            <span
+              className="strip__bar"
+              style={{ height: value === 0 ? "2px" : `${Math.max((value / max) * 100, 8)}%` }}
+            />
             <span className="strip__label">{SHORT[p.month - 1]}</span>
           </button>
         );
@@ -66,6 +72,10 @@ export function StackedBar({
 }) {
   const total = lines.reduce((sum, l) => sum + num(l.amount), 0);
   if (total <= 0) return null;
+
+  // Полоса из одного сегмента — это не доля, а закрашенный прямоугольник:
+  // заголовок с одной строкой «Илья — всё» не сообщает ничего.
+  if (lines.length < 2) return null;
 
   return (
     <section className="block">
@@ -112,6 +122,7 @@ export function CategoryBars({
    *  вопрос, который вообще задают статистике. */
   deltas?: Map<string, number>;
 }) {
+  const [expanded, setExpanded] = useState(false);
   if (lines.length === 0) return null;
 
   const max = Math.max(...lines.map((l) => num(l.amount)), 1);
@@ -125,29 +136,30 @@ export function CategoryBars({
   return (
     <section className="block">
       <h2 className="block__title">По категориям</h2>
-      {[...head, ...orphans].map((l) => (
-        <button
-          key={l.name}
-          className={`bar${activeID === l.id && l.id !== 0 ? " bar--on" : ""}`}
-          onClick={() => l.id !== 0 && onPick(l.id)}
-          disabled={l.id === 0}
-        >
-          <span className="bar__name">{l.name}</span>
-          <span className="bar__track">
-            <span className="bar__fill" style={{ width: `${(num(l.amount) / max) * 100}%` }} />
-          </span>
-          <span className="bar__value">{money(l.amount)}</span>
-          <span className="bar__delta">{deltaLabel(deltas?.get(l.name))}</span>
+      <div className="bars">
+        {[...head, ...orphans, ...(expanded ? rest : [])].map((l) => (
+          <button
+            key={l.name}
+            className={`bar${activeID === l.id && l.id !== 0 ? " bar--on" : ""}`}
+            onClick={() => l.id !== 0 && onPick(l.id)}
+            disabled={l.id === 0}
+          >
+            <span className="bar__name">{l.name}</span>
+            <span className="bar__row">
+              <span className="bar__track">
+                <span className="bar__fill" style={{ width: `${(num(l.amount) / max) * 100}%` }} />
+              </span>
+              <span className="bar__value">{money(l.amount)}</span>
+              <span className="bar__delta">{deltaLabel(deltas?.get(l.name))}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+      {rest.length > 0 && !expanded && (
+        <button className="more more--inline" onClick={() => setExpanded(true)}>
+          Ещё {rest.length} {plural(rest.length, "категория", "категории", "категорий")} ·{" "}
+          {money(String(restSum))}
         </button>
-      ))}
-      {rest.length > 0 && (
-        <div className="bar bar--rest">
-          <span className="bar__name">Ещё {rest.length} к.</span>
-          <span className="bar__track">
-            <span className="bar__fill bar__fill--muted" style={{ width: `${(restSum / max) * 100}%` }} />
-          </span>
-          <span className="bar__value">{money(String(restSum))}</span>
-        </div>
       )}
     </section>
   );
@@ -175,15 +187,7 @@ export function DayColumns({ days, today }: { days: DayPoint[]; today: string })
   if (days.length === 0) return null;
 
   // Один-два столбика — это не график, а недоразумение.
-  const withData = days.filter((d) => num(d.amount) > 0).length;
-  if (withData < 3) {
-    return (
-      <section className="block">
-        <h2 className="block__title">По дням</h2>
-        <p className="block__empty">Данных пока мало — график появится, когда наберётся неделя</p>
-      </section>
-    );
-  }
+  if (days.filter((d) => num(d.amount) > 0).length < 3) return null;
 
   const max = Math.max(...days.map((d) => num(d.amount)), 1);
   const peak = days.reduce((a, b) => (num(a.amount) >= num(b.amount) ? a : b));

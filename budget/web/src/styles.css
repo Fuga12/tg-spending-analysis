@@ -5,6 +5,9 @@
   --surface: #1a1a19;
   --raised: #232322;
   --line: rgba(255, 255, 255, 0.1);
+  /* Утопленный слой: поля внутри поднятого листа. Без него в светлой теме
+     поле #fcfcfb на карточке #ffffff даёт контраст 1.03:1. */
+  --sunken: #141413;
   --ink: #ffffff;
   --ink-2: #c3c2b7;
   --ink-muted: #898781;
@@ -12,7 +15,10 @@
   --slot-1: #3987e5; /* всегда «я» */
   --slot-2: #d95926; /* всегда партнёр */
   --slot-3: #199e70; /* всегда «общее» */
-  --category: #8b7ce8; /* категории — своя серия, с людьми не пересекается */
+  /* Магнитудные бары (категории, дни) — без тона: любой четвёртый цвет
+     рядом с синим проваливает проверку на дальтонизм (ΔE 0.9). Выделяется
+     только выбранное, акцентом. */
+  --magnitude: rgba(255, 255, 255, 0.28);
   --warn: #fab219;
   --danger: #d03b3b;
 
@@ -29,6 +35,7 @@
     --surface: #fcfcfb;
     --raised: #ffffff;
     --line: rgba(11, 11, 11, 0.1);
+    --sunken: #f2f2ef;
     --ink: #0b0b0b;
     --ink-2: #52514e;
     /* Свой приглушённый: #898781 на светлом даёт 3.4:1 при требуемых 4.5 */
@@ -37,7 +44,7 @@
     --slot-1: #2a78d6;
     --slot-2: #eb6834;
     --slot-3: #1baf7a;
-    --category: #6f5fd4;
+    --magnitude: rgba(11, 11, 11, 0.22);
 
     --shadow: 0 8px 24px rgba(11, 11, 11, 0.12);
     color-scheme: light;
@@ -79,13 +86,18 @@ button {
 
 .grid {
   display: grid;
-  gap: 8px 28px;
+  gap: 24px 28px;
+  margin: 24px 0;
+}
+
+.grid__main,
+.grid__side {
+  display: grid;
+  gap: 24px;
+  align-content: start;
 }
 
 @media (min-width: 900px) {
-  .app {
-    max-width: 1180px;
-  }
   .grid {
     grid-template-columns: 1.4fr 1fr;
     align-items: start;
@@ -106,7 +118,14 @@ button {
 .app {
   max-width: 720px;
   margin: 0 auto;
-  padding: 0 16px calc(72px + env(safe-area-inset-bottom));
+  /* Снизу место под кнопку «+» и тост, иначе они ложатся на подвал. */
+  padding: 0 16px calc(120px + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 900px) {
+  .app {
+    max-width: 1100px;
+  }
 }
 
 @media (min-width: 760px) {
@@ -242,9 +261,11 @@ button {
   justify-content: space-between;
   align-items: baseline;
   gap: 12px;
-  padding: 12px 0 6px;
+  padding: 12px 0;
+  margin-top: 8px;
   background: var(--page);
-  font-size: 15px;
+  border-bottom: 1px solid var(--line);
+  font-size: 16px;
   font-weight: 600;
   color: var(--ink-2);
 }
@@ -330,6 +351,7 @@ button {
   display: grid;
   place-items: center;
   flex: none;
+  overflow: hidden;
   width: 24px;
   height: 24px;
   border-radius: 999px;
@@ -347,6 +369,21 @@ button {
 
 .who--partner {
   background: var(--slot-2);
+}
+
+.who__img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+  display: block;
+}
+
+.foot__me {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-2);
 }
 
 /* --- прочее -------------------------------------------------------- */
@@ -380,6 +417,13 @@ button {
   opacity: 0.6;
 }
 
+.more--inline {
+  margin-top: 8px;
+  min-height: 44px;
+  height: auto;
+  font-size: 14px;
+}
+
 .more {
   display: block;
   width: 100%;
@@ -393,14 +437,16 @@ button {
 .foot {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 8px 16px;
   align-items: center;
   padding: 32px 0 8px;
-  font-size: 13px;
-  color: var(--ink-muted);
+  font-size: 14px;
+  color: var(--ink-2);
 }
 
 .foot button {
+  min-height: 44px;
+  padding: 0 4px;
   color: var(--slot-1);
 }
 
@@ -470,7 +516,7 @@ button {
   max-width: 560px;
   max-height: 92vh;
   overflow-y: auto;
-  padding: 8px 16px calc(24px + env(safe-area-inset-bottom));
+  padding: 8px 20px calc(24px + env(safe-area-inset-bottom));
   background: var(--raised);
   border-radius: var(--r-card) var(--r-card) 0 0;
   box-shadow: var(--shadow);
@@ -506,14 +552,14 @@ button {
 }
 
 .sheet__title {
-  margin: 0 0 12px;
+  margin: 0 0 16px;
   font-size: 20px;
   font-weight: 600;
 }
 
 .sheet__hint {
   font-size: 13px;
-  color: var(--ink-muted);
+  color: var(--ink-2);
   margin: 8px 0 0;
 }
 
@@ -534,32 +580,46 @@ button {
   background: color-mix(in srgb, var(--danger) 14%, transparent);
 }
 
+/* Пустое поле без рамки не видно вовсе — остаётся один знак рубля. */
 .sheet__amount {
   display: flex;
-  align-items: baseline;
-  justify-content: center;
-  gap: 6px;
-  padding: 12px 0 20px;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 20px;
+  padding: 12px 16px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--r-field);
+  transition: border-color 120ms ease-out;
+}
+
+.sheet__amount:focus-within {
+  border-color: var(--slot-1);
 }
 
 .sheet__amount input {
-  width: 100%;
-  max-width: 260px;
+  flex: 1;
+  min-width: 0;
   border: none;
   background: none;
   text-align: right;
-  font-size: 40px;
+  font-size: 34px;
   font-weight: 600;
   letter-spacing: -0.02em;
+  padding: 0;
 }
 
-.sheet__amount input:focus-visible {
+.sheet__amount input::placeholder {
+  color: var(--ink-muted);
+  opacity: 0.5;
+}
+
+.sheet__amount input:focus {
   outline: none;
-  border-bottom: 2px solid var(--slot-1);
 }
 
-.sheet__amount span {
-  font-size: 24px;
+.sheet__currency {
+  font-size: 22px;
   color: var(--ink-muted);
 }
 
@@ -580,6 +640,13 @@ button {
   font-weight: 600;
 }
 
+/* Разрушающее действие отделено от основного, а не в 12 пикселях под ним. */
+.sheet__sep {
+  height: 1px;
+  margin: 20px 0 4px;
+  background: var(--line);
+}
+
 .sheet__confirm {
   display: flex;
   flex-wrap: wrap;
@@ -591,20 +658,20 @@ button {
 }
 
 .field {
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 
 .field__label {
-  font-size: 13px;
-  color: var(--ink-muted);
-  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+  margin-bottom: 8px;
 }
 
 .input {
   width: 100%;
-  height: 48px;
-  padding: 0 14px;
-  background: var(--surface);
+  height: 44px;
+  padding: 0 16px;
+  background: var(--sunken);
   border: 1px solid var(--line);
   border-radius: var(--r-field);
 }
@@ -614,11 +681,17 @@ button {
   outline: none;
 }
 
+.input::placeholder {
+  color: var(--ink-muted);
+  opacity: 0.7;
+}
+
 .input--date {
   width: auto;
   flex: 1;
   min-width: 150px;
-  height: 40px;
+  height: 44px;
+  border-radius: 999px;
 }
 
 .chips {
@@ -628,13 +701,18 @@ button {
 }
 
 .chip {
-  min-height: 40px;
+  min-height: 44px;
   padding: 0 14px;
   border-radius: 999px;
   border: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--sunken);
   font-size: 15px;
   font-weight: 500;
+  transition: background 120ms ease-out, border-color 120ms ease-out;
+}
+
+.chip:hover:not(:disabled):not(.chip--on) {
+  border-color: color-mix(in srgb, var(--ink) 24%, transparent);
 }
 
 .chip--on {
@@ -649,19 +727,27 @@ button {
 }
 
 .segmented {
-  display: flex;
+  display: inline-flex;
   gap: 4px;
   padding: 4px;
-  background: var(--surface);
+  background: var(--sunken);
   border: 1px solid var(--line);
-  border-radius: var(--r-field);
+  border-radius: 12px;
 }
 
 .segmented__item {
-  flex: 1;
-  min-height: 40px;
+  min-width: 88px;
+  min-height: 44px;
+  padding: 0 16px;
+  /* Внутренний радиус = внешний минус отступ, иначе угол выбранного
+     сегмента вылезает за кривую контейнера. */
   border-radius: 8px;
   font-size: 15px;
+  color: var(--ink-2);
+}
+
+.segmented__item--on {
+  color: #fff;
 }
 
 .segmented__item--on {
@@ -680,6 +766,11 @@ button {
   color: #fff;
   font-size: 16px;
   font-weight: 600;
+  transition: filter 120ms ease-out;
+}
+
+.btn:hover:not(:disabled) {
+  filter: brightness(1.08);
 }
 
 .btn:disabled {
@@ -733,13 +824,13 @@ button {
   position: fixed;
   left: 16px;
   right: auto;
-  bottom: calc(16px + env(safe-area-inset-bottom));
+  bottom: calc(20px + env(safe-area-inset-bottom));
   z-index: 50;
   display: flex;
   align-items: center;
   gap: 12px;
   max-width: min(340px, calc(100vw - 88px));
-  min-height: 48px;
+  min-height: 56px;
   padding: 0 16px;
   border-radius: var(--r-field);
   background: var(--raised);
@@ -761,7 +852,7 @@ button {
    обводок, сплошные волосяные оси, выборочные подписи. */
 
 .block {
-  margin: 24px 0;
+  margin: 0;
 }
 
 .block__title {
@@ -812,6 +903,14 @@ button {
   background: var(--slot-1);
 }
 
+.strip__item--empty .strip__bar {
+  background: var(--line);
+}
+
+.strip__item:hover:not(.strip__item--on) .strip__bar {
+  background: color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
 .strip__label {
   font-size: 12px;
   color: var(--ink-muted);
@@ -821,45 +920,6 @@ button {
 .strip__item--on .strip__label {
   color: var(--ink);
   font-weight: 600;
-}
-
-.spark {
-  margin: 4px 0 20px;
-}
-
-.spark svg {
-  width: 100%;
-  height: 32px;
-  overflow: visible;
-}
-
-.spark__line {
-  fill: none;
-  stroke: var(--ink-muted);
-  stroke-width: 2;
-  stroke-linejoin: round;
-  stroke-linecap: round;
-  vector-effect: non-scaling-stroke;
-}
-
-.spark__dot {
-  fill: var(--slot-1);
-  stroke: var(--page);
-  stroke-width: 2;
-  vector-effect: non-scaling-stroke;
-}
-
-.spark__labels {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 2px;
-}
-
-.spark__label {
-  flex: 1;
-  min-height: 32px;
-  font-size: 12px;
-  color: var(--ink-muted);
 }
 
 /* полосы участников */
@@ -904,11 +964,14 @@ button {
 
 /* категории */
 
+/* Одинаковые колонки на все строки: раньше каждая строка была своим гридом
+   и мерила ширину по своему содержимому — бар на 55% выходил длиннее бара
+   на 100%, то есть длины сравнивать было нельзя. */
 .bar {
   display: grid;
-  grid-template-columns: minmax(84px, 28%) 1fr auto auto;
+  grid-template-columns: minmax(96px, 30%) 1fr;
   align-items: center;
-  gap: 8px;
+  gap: 0 12px;
   width: 100%;
   min-height: 44px;
   padding: 0 4px;
@@ -916,8 +979,35 @@ button {
   border-radius: 8px;
 }
 
+.bar__row {
+  display: grid;
+  grid-template-columns: 1fr 104px 92px;
+  align-items: center;
+  gap: 12px;
+}
+
+/* На узком экране имя занимает свою строку: в 98 пикселях «Хобби и
+   развлечения» превращается в «Хобби и раз…», а обрезать подписи нельзя. */
+@media (max-width: 430px) {
+  .bar {
+    display: block;
+    padding: 8px 4px;
+  }
+  .bar__name {
+    display: block;
+    margin-bottom: 6px;
+  }
+  .bar__row {
+    grid-template-columns: 1fr auto auto;
+  }
+}
+
 .bar--on {
-  background: color-mix(in srgb, var(--category) 16%, transparent);
+  background: color-mix(in srgb, var(--slot-1) 14%, transparent);
+}
+
+.bar--on .bar__fill {
+  background: var(--slot-1);
 }
 
 .bar:disabled {
@@ -941,7 +1031,7 @@ button {
 .bar__fill {
   display: block;
   height: 100%;
-  background: var(--category);
+  background: var(--magnitude);
   border-radius: 0 4px 4px 0; /* скругление на конце данных, у базы прямой */
 }
 
@@ -961,14 +1051,10 @@ button {
   white-space: nowrap;
 }
 
-.delta--up {
-  color: #f0693c;
-}
-
-.delta--down {
-  color: #4caf7d;
-}
-
+/* Нейтральная: смысл несёт знак. Оранжевый — цвет партнёра, зелёный —
+   «общего», и красить ими число значит путать две разные шкалы. */
+.delta--up,
+.delta--down,
 .delta--flat {
   color: var(--ink-muted);
 }
@@ -976,14 +1062,6 @@ button {
 .bar__delta {
   min-width: 72px;
   text-align: right;
-}
-
-.bar__percent {
-  font-size: 13px;
-  color: var(--ink-muted);
-  min-width: 34px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
 }
 
 /* дни */
@@ -1006,7 +1084,7 @@ button {
 
 .days__fill {
   width: 100%;
-  background: var(--category);
+  background: var(--magnitude);
   border-radius: 3px 3px 0 0;
   opacity: 0.75;
 }
@@ -1036,6 +1114,7 @@ button {
 .cats {
   display: flex;
   flex-direction: column;
+  margin-bottom: 8px;
 }
 
 .cats__row {

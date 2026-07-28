@@ -3,7 +3,8 @@ import { api, Category, DayPoint, Line, Me, MonthPoint, MonthReport, Tx, Unautho
 import Sheet from "./Sheet";
 import { CategoryBars, DayColumns, MonthStrip, StackedBar } from "./Charts";
 import Categories from "./Categories";
-import { beneficiaryLabel, dayLabel, initials, money, monthName, todayFrom } from "./format";
+import Avatar from "./Avatar";
+import { beneficiaryLabel, dayLabel, money, monthName, plural, todayFrom } from "./format";
 
 const PAGE = 200;
 
@@ -13,6 +14,16 @@ const MONTHS_IN = [
 ];
 
 const monthOf = (month: number) => MONTHS_IN[month - 1];
+
+/** Полоса месяцев: шесть завершённых плюс текущий — но только если его там
+ *  ещё нет, иначе в прошлом месяце подпись дублируется. */
+function stripPoints(months: MonthPoint[], route: Route, total: string): MonthPoint[] {
+  const now = new Date();
+  const current = { year: now.getFullYear(), month: now.getMonth() + 1 };
+  const has = months.some((m) => m.year === current.year && m.month === current.month);
+  const amount = route.year === current.year && route.month === current.month ? total : "0";
+  return has ? months : [...months, { ...current, amount }];
+}
 
 /** Дельты категорий приходят с сервера строками: считать их на клиенте
  *  значит повторить фильтрацию расходов и разойтись с ботом. */
@@ -283,14 +294,6 @@ export default function App() {
         </div>
       )}
 
-      {!loading && !route.query && months.length > 0 && (
-        <MonthStrip
-          points={[...months, { year: route.year, month: route.month, amount: report?.total ?? "0" }]}
-          active={{ year: route.year, month: route.month }}
-          onPick={(p) => go({ ...route, query: "", year: p.year, month: p.month })}
-        />
-      )}
-
       {loading ? (
         <Skeleton />
       ) : (
@@ -298,7 +301,18 @@ export default function App() {
           {route.query ? (
             <SearchSummary query={route.query} total={total} />
           ) : (
-            report && <Hero report={report} />
+            report && (
+              <>
+                <Hero report={report} />
+                {months.length > 0 && (
+                  <MonthStrip
+                    points={stripPoints(months, route, report.total)}
+                    active={{ year: route.year, month: route.month }}
+                    onPick={(p) => go({ ...route, query: "", year: p.year, month: p.month })}
+                  />
+                )}
+              </>
+            )
           )}
 
           {!route.query && report && report.pending > 0 && !route.pending && (
@@ -352,7 +366,7 @@ export default function App() {
             grouped.map(([day, dayItems]) => (
               <section key={day}>
                 <div className="day">
-                  <span>{dayLabel(day, today)}</span>
+                  <span>{dayLabel(day, route.query ? "" : today)}</span>
                   <span className="day__sum">расходы {money(dayExpenses(dayItems))}</span>
                 </div>
                 <div className="rows">
@@ -452,11 +466,13 @@ function SearchIcon() {
 
 function Hero({ report }: { report: MonthReport }) {
   const zero = Number(report.total) === 0;
+  // Ноль в 48 пикселей — не информация, а дыра посреди экрана.
+  if (zero) return null;
   return (
     <div className="hero">
       <div className="hero__label">Всего за {monthName(report.month).toLowerCase()}</div>
       <div className="hero__value">{money(report.total)}</div>
-      {!zero && report.compare && (
+      {report.compare && (
         <div className="hero__delta">
           {deltaText(report)}
           {report.compare.partial ? ` · за первые ${report.compare.days} дн.` : ""}
@@ -499,9 +515,12 @@ function Row({ tx, me, onOpen }: { tx: Tx; me: Me | null; onOpen: () => void }) 
 
   return (
     <button className={`row${tx.needs_review ? " row--review" : ""}`} onClick={onOpen}>
-      <span className={`who${isMine ? "" : " who--partner"}`} title={name}>
-        {initials(name, isMine ? me?.partner?.name : me?.name)}
-      </span>
+      <Avatar
+        id={tx.payer_id}
+        name={name}
+        other={isMine ? me?.partner?.name : me?.name}
+        partner={!isMine}
+      />
       <div className="row__main">
         <div className="row__title">
           {transfer ? "↔ Перевод" : tx.description || "без описания"}
@@ -535,7 +554,10 @@ async function leave(everywhere: boolean) {
 function Footer({ me, onCategories }: { me: Me | null; onCategories: () => void }) {
   return (
     <div className="foot">
-      <span>{me?.name ?? "…"}</span>
+      <span className="foot__me">
+        {me && <Avatar id={me.id} name={me.name} other={me.partner?.name} size={20} />}
+        {me?.name ?? "…"}
+      </span>
       <button onClick={onCategories}>Категории</button>
       <button onClick={() => void leave(false)}>Выйти</button>
       <button className="foot__danger" onClick={() => void leave(true)}>
@@ -603,10 +625,4 @@ function dayExpenses(items: Tx[]): string {
   return `${sign}${abs / 100n}.${String(abs % 100n).padStart(2, "0")}`;
 }
 
-function plural(n: number, one: string, few: string, many: string): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return one;
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
-  return many;
-}
+

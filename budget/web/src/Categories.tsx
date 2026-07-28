@@ -33,12 +33,16 @@ export default function Categories({
     <div className="backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="sheet" role="dialog" aria-modal="true">
         <div className="sheet__grip" />
-        <h2 className="sheet__title">Категории</h2>
-        <p className="sheet__hint">
-          Подсказка уходит в запрос к модели — по ней она решает, куда отнести трату.
-          «По умолчанию» побеждает догадку модели: если в сообщении не сказано,
-          на кого потрачено, берётся оно.
-        </p>
+        <h2 className="sheet__title">
+          {editing ? editing.name : creating ? "Новая категория" : "Категории"}
+        </h2>
+        {!editing && !creating && (
+          <p className="sheet__hint">
+            Подсказка уходит в запрос к модели — по ней она решает, куда отнести трату.
+            «По умолчанию» побеждает догадку: если в сообщении не сказано, на кого
+            потрачено, берётся оно.
+          </p>
+        )}
 
         {editing || creating ? (
           <CategoryForm

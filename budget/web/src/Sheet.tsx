@@ -3,9 +3,9 @@ import { api, Category, Conflict, Tx } from "./api";
 import { money } from "./format";
 
 const BENEFICIARIES = [
-  { value: "payer", label: "👤 мне" },
-  { value: "partner", label: "🧍 ей" },
-  { value: "both", label: "👥 нам" },
+  { value: "payer", label: "мне" },
+  { value: "partner", label: "ей" },
+  { value: "both", label: "нам" },
 ] as const;
 
 const KINDS = [
@@ -40,6 +40,7 @@ export default function Sheet({ tx, categories, defaultDay, today, partnerName, 
   const [day, setDay] = useState(tx?.day ?? defaultDay);
   const [version, setVersion] = useState(tx?.updated_at ?? null);
 
+  const [editingAmount, setEditingAmount] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<Tx | null>(null);
@@ -96,8 +97,10 @@ export default function Sheet({ tx, categories, defaultDay, today, partnerName, 
     };
   }, [onClose]);
 
+  // Фокус — на самом листе, а не на поле суммы: иначе клавиатура телефона
+  // сразу закрывает выбор категории (webapp-design.md §4).
   useEffect(() => {
-    sheetRef.current?.querySelector<HTMLElement>("input, button")?.focus();
+    sheetRef.current?.focus();
   }, []);
 
   async function save() {
@@ -195,7 +198,7 @@ export default function Sheet({ tx, categories, defaultDay, today, partnerName, 
 
   return (
     <Backdrop onClose={onClose}>
-      <div className="sheet" role="dialog" aria-modal="true" ref={sheetRef}>
+      <div className="sheet" role="dialog" aria-modal="true" tabIndex={-1} ref={sheetRef}>
         <div className="sheet__grip" />
         <h2 className="sheet__title">
           {tx ? (transfer ? "Перевод" : kind === "income" ? "Поступление" : "Трата") : "Новая запись"}
@@ -208,18 +211,22 @@ export default function Sheet({ tx, categories, defaultDay, today, partnerName, 
         <label className="sheet__amount">
           <input
             inputMode="decimal"
-            value={amount}
+            value={editingAmount ? amount : prettyAmount(amount)}
+            placeholder="0"
             disabled={readOnly}
-            onChange={(e) => setAmount(e.target.value)}
+            onFocus={() => setEditingAmount(true)}
+            onBlur={() => setEditingAmount(false)}
+            onChange={(e) => setAmount(e.target.value.replace(".", ","))}
             aria-label="Сумма"
           />
-          <span>₽</span>
+          <span className="sheet__currency">₽</span>
         </label>
 
         <Field label="Описание">
           <input
             className="input"
             value={description}
+            placeholder="что купили"
             disabled={readOnly}
             maxLength={64}
             onChange={(e) => setDescription(e.target.value)}
@@ -306,6 +313,7 @@ export default function Sheet({ tx, categories, defaultDay, today, partnerName, 
             <button className="btn" onClick={() => void save()} disabled={busy}>
               {busy ? "Сохраняю…" : "Сохранить"}
             </button>
+            {tx && <div className="sheet__sep" />}
             {tx &&
               (confirming ? (
                 <div className="sheet__confirm">
@@ -376,6 +384,15 @@ function Segmented<T extends string>({
       ))}
     </div>
   );
+}
+
+/** Вне фокуса сумма показывается как везде: «1 234 567,89». */
+function prettyAmount(raw: string): string {
+  if (!raw) return "";
+  const [whole, frac = ""] = raw.replace(",", ".").split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0");
+  const cents = frac.replace(/0+$/, "");
+  return cents ? `${grouped},${cents}` : grouped;
 }
 
 function shiftDay(day: string, delta: number): string {

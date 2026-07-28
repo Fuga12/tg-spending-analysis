@@ -39,6 +39,7 @@ type Server struct {
 	log     *slog.Logger
 	http    *http.Server
 	limiter *rateLimiter
+	avatars *avatarCache
 	now     func() time.Time // подменяется в тестах
 }
 
@@ -59,7 +60,7 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 		return nil, err
 	}
 
-	s := &Server{cfg: cfg, store: store, log: log, limiter: newRateLimiter(authAttemptsPerMinute), now: time.Now}
+	s := &Server{cfg: cfg, store: store, log: log, limiter: newRateLimiter(authAttemptsPerMinute), avatars: newAvatarCache(), now: time.Now}
 
 	// Под сессией — всё, что трогает данные. Health и статика открыты:
 	// иначе страница не загрузится до входа.
@@ -76,6 +77,7 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 	api.HandleFunc("DELETE /api/transactions/{id}", s.handleDelete)
 	api.HandleFunc("PATCH /api/categories/{id}", s.handleCategoryPatch)
 	api.HandleFunc("POST /api/categories", s.handleCategoryCreate)
+	api.HandleFunc("GET /api/avatar/{id}", s.handleAvatar)
 	// Свои заглушки на прочие методы: встроенный 405 у ServeMux — текстовый,
 	// а под /api всё обязано быть JSON (webapp.md §4).
 	api.HandleFunc("/api/me", methodNotAllowed)
@@ -87,6 +89,7 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 	api.HandleFunc("/api/report/months", methodNotAllowed)
 	api.HandleFunc("/api/transactions/{id}", methodNotAllowed)
 	api.HandleFunc("/api/categories/{id}", methodNotAllowed)
+	api.HandleFunc("/api/avatar/{id}", methodNotAllowed)
 	api.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "нет такого метода")
 	})
@@ -99,6 +102,7 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 		"/api/me", "/api/session", "/api/categories",
 		"/api/transactions", "/api/transactions/", "/api/report/month",
 		"/api/report/daily", "/api/report/months", "/api/categories/",
+		"/api/avatar/",
 	} {
 		mux.Handle(path, s.requireSession(api))
 	}
