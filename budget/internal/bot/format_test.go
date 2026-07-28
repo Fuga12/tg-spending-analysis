@@ -73,7 +73,7 @@ func TestTransactionLine(t *testing.T) {
 				Beneficiary: classify.BenBoth, Kind: classify.KindExpense,
 				SpentAt: now.AddDate(0, 0, -1),
 			},
-			want: "✓ 1 200 ₽ · Продукты · 👥 на двоих · вчера",
+			want: "✓ 1 200 ₽ · Продукты · 👥 · вчера",
 		},
 		{
 			name: "деградированная запись",
@@ -81,7 +81,7 @@ func TestTransactionLine(t *testing.T) {
 				Amount: decimal.RequireFromString("600"), Beneficiary: classify.BenPayer,
 				Kind: classify.KindExpense, NeedsClassification: true, SpentAt: now,
 			},
-			want: "✓ 600 ₽ · категория позже · 👤 на себя",
+			want: "✓ 600 ₽ · категория позже",
 		},
 		{
 			name: "перевод",

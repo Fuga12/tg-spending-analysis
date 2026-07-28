@@ -36,19 +36,21 @@ func (b *Bot) onStart(c tele.Context) error {
 
 // onText — основной сценарий: свободный текст превращается в траты (§9).
 func (b *Bot) onText(c tele.Context) error {
-	ctx, cancel := b.ctx()
-	defer cancel()
-
 	sender := c.Sender()
 	text := strings.TrimSpace(c.Text())
 
-	// Пользователь мог начать с траты, не нажав /start.
-	if err := b.store.UpsertUser(ctx, sender.ID, displayName(sender)); err != nil {
+	userCtx, cancelUser := b.ctx()
+	err := b.store.UpsertUser(userCtx, sender.ID, displayName(sender))
+	cancelUser()
+	if err != nil {
+		// Пользователь мог начать с траты, не нажав /start.
 		b.log.Error("upsert пользователя", "err", err, "user_id", sender.ID)
 		return c.Send("База не отвечает, попробуй ещё раз.")
 	}
 
-	res, err := b.classifier.Classify(ctx, sender.ID, text)
+	classifyCtx, cancelClassify := b.classifyCtx()
+	res, err := b.classifier.Classify(classifyCtx, sender.ID, text)
+	cancelClassify()
 	if err != nil {
 		if errors.Is(err, classify.ErrNoAmount) {
 			return c.Send(noAmountReply)
@@ -57,25 +59,37 @@ func (b *Bot) onText(c tele.Context) error {
 		return c.Send("Не смог разобрать сообщение. Попробуй иначе: 600 лимонад")
 	}
 
+	// Запись идёт на свежем контексте: сколько бы ни думала модель, на
+	// сохранение разобранного времени должно хватить.
+	ctx, cancel := b.ctx()
+	defer cancel()
+
+	cats, err := b.store.Categories(ctx)
+	if err != nil {
+		b.log.Warn("не прочитал категории", "err", err)
+	}
+
 	now := time.Now()
 	for _, item := range res.Items {
-		tx, err := b.save(ctx, sender.ID, text, item, now)
+		tx, err := b.save(ctx, sender.ID, text, item, cats, now)
 		if err != nil {
 			b.log.Error("запись траты", "err", err, "user_id", sender.ID, "raw_text", text)
 			if sendErr := c.Send("Не смог записать трату. Напиши ещё раз."); sendErr != nil {
-				return sendErr
+				b.log.Error("не отправил ответ", "err", sendErr)
 			}
 			continue
 		}
+		// Ошибка отправки одного ответа не должна лишать пользователя
+		// остальных: транзакции уже в базе, а кнопки приходят только с ними.
 		if err := c.Send(transactionLine(tx, now, b.cfg.TZ), keyboardFor(tx)); err != nil {
-			return err
+			b.log.Error("не отправил ответ по трате", "err", err, "tx", tx.ID)
 		}
 	}
 	return nil
 }
 
 // save записывает трату и запоминает слова описания в личном кэше (§8).
-func (b *Bot) save(ctx context.Context, userID int64, raw string, item classify.Item, now time.Time) (storage.Transaction, error) {
+func (b *Bot) save(ctx context.Context, userID int64, raw string, item classify.Item, cats []storage.Category, now time.Time) (storage.Transaction, error) {
 	tx := storage.Transaction{
 		PayerID:             userID,
 		Beneficiary:         item.Beneficiary,
@@ -95,9 +109,7 @@ func (b *Bot) save(ctx context.Context, userID int64, raw string, item classify.
 	tx.ID = id
 
 	if item.CategoryID != nil {
-		if cat := b.categoryName(ctx, *item.CategoryID); cat != "" {
-			tx.CategoryName = cat
-		}
+		tx.CategoryName = categoryName(cats, *item.CategoryID)
 		b.rememberWords(ctx, userID, item)
 	}
 	return tx, nil
@@ -105,8 +117,11 @@ func (b *Bot) save(ctx context.Context, userID int64, raw string, item classify.
 
 // rememberWords кладёт слова описания в личный кэш, чтобы в следующий раз
 // ответ пришёл мгновенно и без обращения к API (§8).
+//
+// Запоминаются только расходы: быстрый путь всегда собирает expense, и
+// запомненный доход или перевод во второй раз записался бы тратой.
 func (b *Bot) rememberWords(ctx context.Context, userID int64, item classify.Item) {
-	if item.CategoryID == nil || item.Kind == classify.KindTransfer {
+	if item.CategoryID == nil || item.Kind != classify.KindExpense {
 		return
 	}
 	for _, w := range item.Words {
@@ -116,12 +131,7 @@ func (b *Bot) rememberWords(ctx context.Context, userID int64, item classify.Ite
 	}
 }
 
-func (b *Bot) categoryName(ctx context.Context, id int32) string {
-	cats, err := b.store.Categories(ctx)
-	if err != nil {
-		b.log.Warn("не прочитал категории", "err", err)
-		return ""
-	}
+func categoryName(cats []storage.Category, id int32) string {
 	for _, c := range cats {
 		if c.ID == id {
 			return c.Name

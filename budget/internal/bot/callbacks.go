@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,11 @@ import (
 	"budget/internal/storage"
 )
 
+// maxRememberedWords — сколько слов правки уезжает в личный кэш. Модель даёт
+// описание из 1-3 слов; длиннее — значит описание собрано из сырого текста,
+// и учить по нему словарь нельзя (§8).
+const maxRememberedWords = 3
+
 // onBeneficiary меняет, на кого потрачено, и запоминает выбор как ручной:
 // ручная правка приоритетнее ответа модели и не перезатирается (§8).
 func (b *Bot) onBeneficiary(beneficiary string) tele.HandlerFunc {
@@ -19,26 +25,17 @@ func (b *Bot) onBeneficiary(beneficiary string) tele.HandlerFunc {
 		ctx, cancel := b.ctx()
 		defer cancel()
 
-		txID, err := strconv.ParseInt(callbackData(c), 10, 64)
+		tx, err := b.owned(ctx, c)
 		if err != nil {
-			return c.Respond(&tele.CallbackResponse{Text: "Не понял, какая это трата"})
+			return respond(c, err.Error())
 		}
 
-		ok, err := b.store.SetBeneficiary(ctx, txID, c.Sender().ID, beneficiary)
-		if err != nil {
-			b.log.Error("смена бенефициара", "err", err, "tx", txID)
-			return c.Respond(&tele.CallbackResponse{Text: "База не отвечает"})
+		if _, err := b.store.SetBeneficiary(ctx, tx.ID, tx.PayerID, beneficiary); err != nil {
+			b.log.Error("смена бенефициара", "err", err, "tx", tx.ID)
+			return respond(c, "База не отвечает")
 		}
-		if !ok {
-			return c.Respond(&tele.CallbackResponse{Text: "Это не твоя трата"})
-		}
-
-		tx, err := b.store.Transaction(ctx, txID)
-		if err != nil {
-			b.log.Error("чтение траты", "err", err, "tx", txID)
-			return c.Respond(&tele.CallbackResponse{Text: "База не отвечает"})
-		}
-		b.rememberChoice(ctx, c.Sender().ID, tx)
+		tx.Beneficiary = beneficiary
+		b.rememberChoice(ctx, tx)
 
 		if err := b.edit(c, tx); err != nil {
 			return err
@@ -52,25 +49,17 @@ func (b *Bot) onCategoryOpen(c tele.Context) error {
 	ctx, cancel := b.ctx()
 	defer cancel()
 
-	txID, err := strconv.ParseInt(callbackData(c), 10, 64)
+	tx, err := b.owned(ctx, c)
 	if err != nil {
-		return c.Respond(&tele.CallbackResponse{Text: "Не понял, какая это трата"})
-	}
-
-	tx, err := b.store.Transaction(ctx, txID)
-	if err != nil {
-		return c.Respond(&tele.CallbackResponse{Text: "Трата не найдена"})
-	}
-	if tx.PayerID != c.Sender().ID {
-		return c.Respond(&tele.CallbackResponse{Text: "Это не твоя трата"})
+		return respond(c, err.Error())
 	}
 
 	cats, err := b.store.Categories(ctx)
 	if err != nil {
 		b.log.Error("чтение категорий", "err", err)
-		return c.Respond(&tele.CallbackResponse{Text: "База не отвечает"})
+		return respond(c, "База не отвечает")
 	}
-	if err := c.Edit(transactionLine(tx, time.Now(), b.cfg.TZ), categoryKeyboard(txID, cats)); err != nil {
+	if err := editMessage(c, transactionLine(tx, time.Now(), b.cfg.TZ), categoryKeyboard(tx.ID, cats)); err != nil {
 		return err
 	}
 	return c.Respond()
@@ -81,31 +70,36 @@ func (b *Bot) onCategoryPick(c tele.Context) error {
 	ctx, cancel := b.ctx()
 	defer cancel()
 
-	txPart, catPart, found := strings.Cut(callbackData(c), ":")
+	_, catPart, found := strings.Cut(callbackData(c), ":")
 	if !found {
-		return c.Respond(&tele.CallbackResponse{Text: "Не понял выбор"})
+		return respond(c, "Не понял выбор")
 	}
-	txID, err1 := strconv.ParseInt(txPart, 10, 64)
-	catID, err2 := strconv.ParseInt(catPart, 10, 32)
-	if err1 != nil || err2 != nil {
-		return c.Respond(&tele.CallbackResponse{Text: "Не понял выбор"})
+	catID, err := strconv.ParseInt(catPart, 10, 32)
+	if err != nil {
+		return respond(c, "Не понял выбор")
 	}
 
-	ok, err := b.store.SetCategory(ctx, txID, c.Sender().ID, int32(catID))
+	tx, err := b.owned(ctx, c)
 	if err != nil {
-		b.log.Error("смена категории", "err", err, "tx", txID)
-		return c.Respond(&tele.CallbackResponse{Text: "База не отвечает"})
-	}
-	if !ok {
-		return c.Respond(&tele.CallbackResponse{Text: "Это не твоя трата"})
+		return respond(c, err.Error())
 	}
 
-	tx, err := b.store.Transaction(ctx, txID)
-	if err != nil {
-		b.log.Error("чтение траты", "err", err, "tx", txID)
-		return c.Respond(&tele.CallbackResponse{Text: "База не отвечает"})
+	if _, err := b.store.SetCategory(ctx, tx.ID, tx.PayerID, int32(catID)); err != nil {
+		b.log.Error("смена категории", "err", err, "tx", tx.ID)
+		return respond(c, "База не отвечает")
 	}
-	b.rememberChoice(ctx, c.Sender().ID, tx)
+
+	cats, err := b.store.Categories(ctx)
+	if err != nil {
+		b.log.Warn("не прочитал категории", "err", err)
+	}
+	id := int32(catID)
+	tx.CategoryID = &id
+	tx.CategoryName = categoryName(cats, id)
+	b.rememberChoice(ctx, tx)
+	// Флаг снимается только после того, как правка учтена: до этого места
+	// tx.NeedsClassification говорит, что описание собрано из сырого текста.
+	tx.NeedsClassification = false
 
 	if err := b.edit(c, tx); err != nil {
 		return err
@@ -118,33 +112,66 @@ func (b *Bot) onDelete(c tele.Context) error {
 	ctx, cancel := b.ctx()
 	defer cancel()
 
-	txID, err := strconv.ParseInt(callbackData(c), 10, 64)
+	tx, err := b.owned(ctx, c)
 	if err != nil {
-		return c.Respond(&tele.CallbackResponse{Text: "Не понял, какая это трата"})
+		return respond(c, err.Error())
 	}
 
-	ok, err := b.store.DeleteTransaction(ctx, txID, c.Sender().ID)
-	if err != nil {
-		b.log.Error("удаление траты", "err", err, "tx", txID)
-		return c.Respond(&tele.CallbackResponse{Text: "База не отвечает"})
-	}
-	if !ok {
-		return c.Respond(&tele.CallbackResponse{Text: "Это не твоя трата"})
+	if _, err := b.store.DeleteTransaction(ctx, tx.ID, tx.PayerID); err != nil {
+		b.log.Error("удаление траты", "err", err, "tx", tx.ID)
+		return respond(c, "База не отвечает")
 	}
 
-	if err := c.Edit("🗑 удалено"); err != nil {
+	if err := editMessage(c, "🗑 удалено", nil); err != nil {
 		return err
 	}
 	return c.Respond()
 }
 
+// Ответы пользователю, когда правка невозможна. Различать «чужая» и «уже
+// удалена» важно: иначе бот обвиняет человека в чужой трате на его же.
+var (
+	errNotFound = errors.New("Трата уже удалена")
+	errNotYours = errors.New("Это не твоя трата")
+	errBadData  = errors.New("Не понял, какая это трата")
+)
+
+// owned читает транзакцию из коллбэка и проверяет, что жал её плательщик (§9).
+func (b *Bot) owned(ctx context.Context, c tele.Context) (storage.Transaction, error) {
+	idPart, _, _ := strings.Cut(callbackData(c), ":")
+	txID, err := strconv.ParseInt(idPart, 10, 64)
+	if err != nil {
+		return storage.Transaction{}, errBadData
+	}
+
+	tx, err := b.store.Transaction(ctx, txID)
+	if err != nil {
+		return storage.Transaction{}, errNotFound
+	}
+	if tx.PayerID != c.Sender().ID {
+		return storage.Transaction{}, errNotYours
+	}
+	return tx, nil
+}
+
 // rememberChoice запоминает ручную правку в личном кэше слов.
-func (b *Bot) rememberChoice(ctx context.Context, userID int64, tx storage.Transaction) {
-	if tx.CategoryID == nil || tx.Kind == classify.KindTransfer {
+func (b *Bot) rememberChoice(ctx context.Context, tx storage.Transaction) {
+	if tx.CategoryID == nil || tx.Kind != classify.KindExpense {
 		return
 	}
-	for _, w := range classify.SignificantWords(tx.Description) {
-		if err := b.store.UpsertWord(ctx, userID, w, *tx.CategoryID, tx.Beneficiary, storage.SourceManual); err != nil {
+	// У деградированной записи описание — это весь текст сообщения. Ручная
+	// привязка не перезатирается никогда, так что мусор в словаре останется
+	// навсегда: лучше не запоминать вовсе.
+	if tx.NeedsClassification {
+		return
+	}
+
+	words := classify.SignificantWords(tx.Description)
+	if len(words) > maxRememberedWords {
+		return
+	}
+	for _, w := range words {
+		if err := b.store.UpsertWord(ctx, tx.PayerID, w, *tx.CategoryID, tx.Beneficiary, storage.SourceManual); err != nil {
 			b.log.Warn("не запомнил ручную правку", "err", err, "word", w)
 		}
 	}
@@ -152,7 +179,28 @@ func (b *Bot) rememberChoice(ctx context.Context, userID int64, tx storage.Trans
 
 // edit переписывает исходное сообщение, а не шлёт новое (§9).
 func (b *Bot) edit(c tele.Context, tx storage.Transaction) error {
-	return c.Edit(transactionLine(tx, time.Now(), b.cfg.TZ), keyboardFor(tx))
+	return editMessage(c, transactionLine(tx, time.Now(), b.cfg.TZ), keyboardFor(tx))
+}
+
+// editMessage правит сообщение, считая «текст не изменился» нормальным
+// исходом: пользователь мог нажать кнопку, которая уже выбрана.
+func editMessage(c tele.Context, text string, markup *tele.ReplyMarkup) error {
+	var err error
+	if markup == nil {
+		err = c.Edit(text)
+	} else {
+		err = c.Edit(text, markup)
+	}
+	if errors.Is(err, tele.ErrSameMessageContent) {
+		return nil
+	}
+	return err
+}
+
+// respond показывает пользователю всплывающее уведомление и закрывает
+// «часики» на кнопке.
+func respond(c tele.Context, text string) error {
+	return c.Respond(&tele.CallbackResponse{Text: text})
 }
 
 // callbackData — полезная часть данных коллбэка без служебного префикса.

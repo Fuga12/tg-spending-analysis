@@ -110,6 +110,13 @@ func (b *Bot) ctx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 15*time.Second)
 }
 
+// classifyCtx — отдельный контекст на разбор сообщения. Разбор может съесть
+// две попытки по LLM_TIMEOUT плюс backoff, и делить дедлайн с записью в базу
+// нельзя: иначе трата разобрана, а сохранить её уже нечем (§8).
+func (b *Bot) classifyCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 2*b.cfg.LLMTimeout+10*time.Second)
+}
+
 func (b *Bot) routes() {
 	b.tb.Handle("/start", b.onStart)
 	b.tb.Handle(tele.OnText, b.onText)

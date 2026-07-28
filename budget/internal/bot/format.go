@@ -51,6 +51,19 @@ func beneficiaryLabel(b string) string {
 	}
 }
 
+// beneficiaryIcon — короткая форма: когда в строке есть ещё и дата, места
+// на слова не остаётся (§9).
+func beneficiaryIcon(b string) string {
+	switch b {
+	case classify.BenPayer:
+		return "👤"
+	case classify.BenPartner:
+		return "🧍"
+	default:
+		return "👥"
+	}
+}
+
 // dayLabel — «вчера», «позавчера» или дата, если трата не сегодняшняя.
 // Пустая строка означает «сегодня», её показывать не нужно.
 func dayLabel(spentAt, now time.Time, loc *time.Location) string {
@@ -81,21 +94,28 @@ func transactionLine(t storage.Transaction, now time.Time, loc *time.Location) s
 	}
 
 	parts := []string{"✓ " + Money(t.Amount)}
-	switch {
-	case t.NeedsClassification:
-		parts = append(parts, "категория позже")
-	case t.CategoryName != "":
+	if t.Kind == classify.KindIncome {
+		// Поступление иначе читается как трата. В плане такой строки нет,
+		// но и дохода без пометки там тоже нет.
+		parts[0] = "↑ " + Money(t.Amount)
+	}
+
+	if t.NeedsClassification {
+		// Ровно как в §8: «✓ 600 ₽ · категория позже», без бенефициара.
+		return strings.Join(append(parts, "категория позже"), " · ")
+	}
+
+	if t.CategoryName != "" {
 		parts = append(parts, t.CategoryName)
-	default:
+	} else {
 		parts = append(parts, "без категории")
 	}
-	parts = append(parts, beneficiaryLabel(t.Beneficiary))
 
-	if day := dayLabel(t.SpentAt, now, loc); day != "" {
-		parts = append(parts, day)
-	}
-	if t.Kind == classify.KindIncome {
-		parts = append(parts, "поступление")
+	day := dayLabel(t.SpentAt, now, loc)
+	if day == "" {
+		parts = append(parts, beneficiaryLabel(t.Beneficiary))
+	} else {
+		parts = append(parts, beneficiaryIcon(t.Beneficiary), day)
 	}
 	return strings.Join(parts, " · ")
 }
