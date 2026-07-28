@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"budget/internal/auth"
+	"budget/internal/backup"
 	"budget/internal/bot"
 	"budget/internal/classify"
 	"budget/internal/config"
@@ -149,6 +150,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Сторож бэкапов: крон делает дампы, а кто-то должен заметить, если
+	// перестал (§12).
+	var backups *backup.Watcher
+	if cfg.BackupDir != "" {
+		backups = backup.New(cfg.BackupDir, cfg.BackupMaxAge, cfg.OwnerID(), cfg.TZ, b, log)
+		if err := backups.Start(); err != nil {
+			log.Error("слежение за бэкапами", "err", err)
+			os.Exit(1)
+		}
+	} else {
+		log.Info("слежение за бэкапами выключено: BACKUP_DIR не задан")
+	}
+
 	go func() {
 		<-ctx.Done()
 		log.Info("останавливаюсь, доделываю начатое")
@@ -156,6 +170,9 @@ func main() {
 			webSrv.Shutdown()
 		}
 		rem.Stop()
+		if backups != nil {
+			backups.Stop()
+		}
 		b.Shutdown(shutdownTimeout)
 	}()
 

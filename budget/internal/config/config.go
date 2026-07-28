@@ -28,6 +28,11 @@ type Config struct {
 	LLMPricePer1KRub      float64
 	LLMBreakerCooldown    time.Duration
 
+	// Слежение за бэкапами. Пустой BackupDir выключает проверку — так удобнее
+	// локально, где бэкапов и не бывает.
+	BackupDir    string
+	BackupMaxAge time.Duration
+
 	// Веб-интерфейс (webapp.md). Пустой WebBaseURL означает «веба нет»:
 	// сервер не поднимается, бот работает как работал.
 	WebAddr            string
@@ -70,6 +75,7 @@ func Load() (*Config, error) {
 		LLMBaseURL:     envDefault("LLM_BASE_URL", "https://ai.api.cloud.yandex.net/v1"),
 		LLMModel:       envDefault("LLM_MODEL", "yandexgpt/rc"),
 		ReminderAt:     envDefault("REMINDER_AT", "21:00"),
+		BackupDir:      os.Getenv("BACKUP_DIR"),
 		WebAddr:        envDefault("WEB_ADDR", "127.0.0.1:8081"),
 		WebBaseURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("WEB_BASE_URL")), "/"),
 	}
@@ -110,6 +116,11 @@ func Load() (*Config, error) {
 	}
 
 	if c.LLMTimeout, err = envDuration("LLM_TIMEOUT", 6*time.Second); err != nil {
+		return nil, err
+	}
+	// 36 часов: суточный крон, плюс запас на сдвиг и на разовый сбой,
+	// который сам себя лечит следующей ночью.
+	if c.BackupMaxAge, err = envDuration("BACKUP_MAX_AGE", 36*time.Hour); err != nil {
 		return nil, err
 	}
 	if c.LLMBreakerCooldown, err = envDuration("LLM_BREAKER_COOLDOWN", 30*time.Minute); err != nil {
