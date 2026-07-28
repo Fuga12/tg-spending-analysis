@@ -146,6 +146,7 @@ func (b *Bot) routes() {
 		{[]string{"/лимит", "/usage"}, b.onUsage},
 		{[]string{"/категории", "/categories"}, b.onCategories},
 		{[]string{"/помощь", "/help"}, b.onHelp},
+		{[]string{"/вход", "/login"}, b.onLogin},
 	}
 
 	// telebot разбирает команды регуляркой с \w, под которую кириллица не

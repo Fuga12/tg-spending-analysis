@@ -8,6 +8,7 @@ import (
 
 	tele "gopkg.in/telebot.v3"
 
+	"budget/internal/auth"
 	"budget/internal/report"
 	"budget/internal/storage"
 )
@@ -28,6 +29,7 @@ const helpText = `Пиши тратами, как говоришь:
   /день — что потрачено сегодня
   /категории — список категорий
   /лимит — расход токенов
+  /вход — ссылка на сайт: правки и графики
   /помощь — эта шпаргалка`
 
 // onMonth — отчёт за календарный месяц, четыре блока (§10).
@@ -143,4 +145,36 @@ type usageView struct {
 	Stats       statsView
 	BreakerOpen bool
 	BreakerTill time.Time
+}
+
+// onLogin выдаёт одноразовую ссылку на веб-интерфейс (webapp.md §1).
+func (b *Bot) onLogin(c tele.Context) error {
+	if !b.cfg.WebEnabled() {
+		return c.Send("Веб-интерфейс не настроен.")
+	}
+
+	ctx, cancel := b.ctx()
+	defer cancel()
+
+	sender := c.Sender()
+	if err := b.store.UpsertUser(ctx, sender.ID, displayName(sender)); err != nil {
+		b.log.Error("upsert пользователя", "err", err, "user_id", sender.ID)
+		return c.Send("База не отвечает, попробуй ещё раз.")
+	}
+
+	token, hash, err := auth.NewToken()
+	if err != nil {
+		b.log.Error("токен входа", "err", err)
+		return c.Send("Не смог выдать ссылку, попробуй ещё раз.")
+	}
+	if err := b.store.CreateLoginToken(ctx, hash, sender.ID, auth.LoginTokenTTL); err != nil {
+		b.log.Error("запись токена входа", "err", err)
+		return c.Send("Не смог выдать ссылку, попробуй ещё раз.")
+	}
+
+	b.log.Info("выдана ссылка входа", "user_id", sender.ID)
+	// Ссылка одноразовая и живёт пять минут — предупреждаем прямо здесь,
+	// чтобы её не сохраняли в закладки.
+	return c.Send(auth.LoginURL(b.cfg.WebBaseURL, token) +
+		"\n\nСсылка одна на один вход и живёт 5 минут. Нужна новая — снова /вход.")
 }

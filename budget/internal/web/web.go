@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"budget/internal/config"
+	"budget/internal/storage"
 )
 
 // Таймауты запросов. Веб не должен мешать боту записывать траты, поэтому
@@ -33,13 +34,15 @@ const (
 
 // Server — HTTP-интерфейс. Слушает адрес из WEB_ADDR.
 type Server struct {
-	cfg  *config.Config
-	log  *slog.Logger
-	http *http.Server
+	cfg     *config.Config
+	store   *storage.Store
+	log     *slog.Logger
+	http    *http.Server
+	limiter *rateLimiter
 }
 
 // New собирает сервер. Ошибка означает, что запускаться нельзя.
-func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
+func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, error) {
 	static, err := staticFS()
 	if err != nil {
 		return nil, err
@@ -49,10 +52,19 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		return nil, err
 	}
 
-	s := &Server{cfg: cfg, log: log}
+	s := &Server{cfg: cfg, store: store, log: log, limiter: newRateLimiter(authAttemptsPerMinute)}
+
+	// Под сессией — всё, что трогает данные. Health и статика открыты:
+	// иначе страница не загрузится до входа.
+	api := http.NewServeMux()
+	api.HandleFunc("GET /api/me", s.handleMe)
+	api.HandleFunc("DELETE /api/session", s.handleLogout)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
+	mux.HandleFunc("GET /auth", s.handleAuth)
+	mux.Handle("/api/me", s.requireSession(api))
+	mux.Handle("/api/session", s.requireSession(api))
 	// Неизвестный /api/* обязан отвечать JSON-ошибкой, иначе фронт получит
 	// текстовую страницу вместо {"error": ...} (webapp.md §4).
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {

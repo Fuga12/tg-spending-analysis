@@ -31,7 +31,7 @@ func testServer(t *testing.T) (*Server, string) {
 	addr := freePort(t)
 	cfg := &config.Config{WebAddr: addr, WebBaseURL: "http://" + addr, WebInsecureCookies: true}
 
-	s, err := New(cfg, quietLog())
+	s, err := New(cfg, nil, quietLog())
 	if err != nil {
 		t.Fatalf("сервер: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestBusyPortIsStartupError(t *testing.T) {
 	defer ln.Close()
 
 	cfg := &config.Config{WebAddr: ln.Addr().String(), WebBaseURL: "http://x", WebInsecureCookies: true}
-	s, err := New(cfg, quietLog())
+	s, err := New(cfg, nil, quietLog())
 	if err != nil {
 		t.Fatalf("сервер: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestPanicDoesNotKillServer(t *testing.T) {
 	// Паника в обработчике не должна ронять процесс вместе с ботом.
 	addr := freePort(t)
 	cfg := &config.Config{WebAddr: addr, WebBaseURL: "http://" + addr, WebInsecureCookies: true}
-	s, err := New(cfg, quietLog())
+	s, err := New(cfg, nil, quietLog())
 	if err != nil {
 		t.Fatalf("сервер: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestPanicAfterPartialResponse(t *testing.T) {
 	// Ответ уже пошёл клиенту — дописывать в него JSON-ошибку поздно.
 	addr := freePort(t)
 	cfg := &config.Config{WebAddr: addr, WebBaseURL: "http://" + addr, WebInsecureCookies: true}
-	s, err := New(cfg, quietLog())
+	s, err := New(cfg, nil, quietLog())
 	if err != nil {
 		t.Fatalf("сервер: %v", err)
 	}

@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"budget/internal/auth"
 	"budget/internal/bot"
 	"budget/internal/classify"
 	"budget/internal/config"
@@ -32,6 +34,7 @@ func main() {
 	migrateOnly := flag.Bool("migrate", false, "накатить миграции и выйти")
 	migrateDown := flag.Bool("migrate-down", false, "откатить одну миграцию и выйти")
 	webOnly := flag.Bool("web-only", false, "поднять только веб-интерфейс, без бота")
+	loginLink := flag.Int64("login-link", 0, "выдать ссылку входа для telegram id и выйти")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -57,6 +60,12 @@ func main() {
 			log.Error("миграции", "err", err)
 			os.Exit(1)
 		}
+		return
+	}
+
+	// Ссылка входа без бота: пока нет BOT_TOKEN, на сайт иначе не попасть.
+	if *loginLink != 0 {
+		printLoginLink(ctx, log, *loginLink)
 		return
 	}
 
@@ -121,7 +130,7 @@ func main() {
 	// работает как работал (webapp.md §3).
 	var webSrv *web.Server
 	if cfg.WebEnabled() {
-		webSrv, err = web.New(cfg, log)
+		webSrv, err = web.New(cfg, store, log)
 		if err != nil {
 			log.Error("веб", "err", err)
 			os.Exit(1)
@@ -178,7 +187,7 @@ func runWebOnly(ctx context.Context, log *slog.Logger) {
 	}
 	defer store.Close()
 
-	srv, err := web.New(cfg, log)
+	srv, err := web.New(cfg, store, log)
 	if err != nil {
 		log.Error("веб", "err", err)
 		os.Exit(1)
@@ -192,4 +201,36 @@ func runWebOnly(ctx context.Context, log *slog.Logger) {
 	<-ctx.Done()
 	srv.Shutdown()
 	log.Info("остановлен")
+}
+
+// printLoginLink печатает одноразовую ссылку входа. Нужна, пока бот не
+// запущен: выдавать ссылки — его работа, но без токена Telegram его нет.
+func printLoginLink(ctx context.Context, log *slog.Logger, userID int64) {
+	cfg, err := config.LoadWeb()
+	if err != nil {
+		log.Error("конфиг", "err", err)
+		os.Exit(1)
+	}
+
+	store, err := storage.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		log.Error("БД", "err", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+
+	if err := store.UpsertUser(ctx, userID, "Я"); err != nil {
+		log.Error("пользователь", "err", err)
+		os.Exit(1)
+	}
+	token, hash, err := auth.NewToken()
+	if err != nil {
+		log.Error("токен", "err", err)
+		os.Exit(1)
+	}
+	if err := store.CreateLoginToken(ctx, hash, userID, auth.LoginTokenTTL); err != nil {
+		log.Error("запись токена", "err", err)
+		os.Exit(1)
+	}
+	fmt.Println(auth.LoginURL(cfg.WebBaseURL, token))
 }

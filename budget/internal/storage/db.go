@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -39,6 +40,9 @@ func Connect(ctx context.Context, dsn string) (*Store, error) {
 }
 
 func (s *Store) Close() { s.pool.Close() }
+
+// isNoRows — «строк нет» как ожидаемый исход, а не ошибка.
+func isNoRows(err error) bool { return errors.Is(err, pgx.ErrNoRows) }
 
 // Migrate накатывает миграции из embed.FS.
 func Migrate(ctx context.Context, dsn string) error {
