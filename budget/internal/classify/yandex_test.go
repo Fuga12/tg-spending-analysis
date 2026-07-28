@@ -315,3 +315,30 @@ func TestYandexTimeout(t *testing.T) {
 		t.Errorf("строк расхода %d, ожидались две попытки", len(rows))
 	}
 }
+
+func TestYandexBadKeyCountsTowardsBreaker(t *testing.T) {
+	// Неверный ключ: повторять бессмысленно, но копиться в breaker обязано,
+	// иначе бот долбится в сеть на каждое сообщение (§13, проверка фазы 3).
+	var calls int
+	y, _, _ := newTestYandex(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"code":401,"message":"The token is invalid"}}`))
+	})
+
+	_, err := y.Parse(context.Background(), "600 лимонад", testCategories())
+	if ErrKind(err) != storage.ErrKindHTTP {
+		t.Errorf("вид ошибки = %q, ожидался http", ErrKind(err))
+	}
+	if calls != 1 {
+		t.Errorf("запросов %d — неверный ключ повтором не лечится", calls)
+	}
+
+	b := NewBreaker(time.Minute, quietLog())
+	for i := 0; i < 3; i++ {
+		b.Record(err)
+	}
+	if b.Allow() {
+		t.Error("после трёх отказов с неверным ключом breaker должен закрыть сеть")
+	}
+}

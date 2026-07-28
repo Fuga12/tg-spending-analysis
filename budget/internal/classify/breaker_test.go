@@ -217,3 +217,83 @@ func assertDegraded(t *testing.T, res *Result, amount string) {
 		t.Errorf("days_ago = %d, ожидался 0", it.DaysAgo)
 	}
 }
+
+func TestBreakerNeverSticksOpen(t *testing.T) {
+	// Пробная попытка провалилась ошибкой, которая в счётчик не идёт.
+	// Breaker обязан вернуться к обычному циклу остывания, а не залипнуть.
+	b, c := newTestBreaker()
+	for i := 0; i < 3; i++ {
+		b.Record(quotaErr())
+	}
+
+	c.add(31 * time.Minute)
+	if !b.Allow() {
+		t.Fatal("ожидалась пробная попытка")
+	}
+	b.Record(&Error{Kind: storage.ErrKindTimeout, Err: errors.New("не дождались")})
+
+	if open, _ := b.State(); !open {
+		t.Error("после неудачной пробы breaker должен считаться открытым")
+	}
+	c.add(31 * time.Minute)
+	if !b.Allow() {
+		t.Fatal("breaker залип открытым: новой пробы не будет никогда")
+	}
+	b.Record(nil)
+	if !b.Allow() {
+		t.Error("успешная проба должна закрывать breaker")
+	}
+}
+
+func TestBudgetCheckedBeforeBreakerProbe(t *testing.T) {
+	// Исчерпанный бюджет не должен съедать пробную попытку breaker: иначе
+	// с наступлением нового месяца сеть так и не откроется (§7).
+	b, c := newTestBreaker()
+	for i := 0; i < 3; i++ {
+		b.Record(quotaErr())
+	}
+	c.add(31 * time.Minute)
+
+	llm := &countingLLM{items: []RawItem{raw("600", "лимонад", "Продукты", BenBoth, KindExpense, 0)}}
+	svc := NewService(&fakeDict{}, llm, b, exhaustedBudget{}, quietLog())
+	if _, err := svc.Classify(context.Background(), 1, "600 лимонад"); err != nil {
+		t.Fatalf("неожиданная ошибка: %v", err)
+	}
+
+	// Новый месяц: бюджет отпустил — проба должна быть на месте.
+	svc = NewService(&fakeDict{}, llm, b, denyBudget{}, quietLog())
+	res, err := svc.Classify(context.Background(), 1, "600 лимонад")
+	if err != nil {
+		t.Fatalf("неожиданная ошибка: %v", err)
+	}
+	if llm.calls != 1 {
+		t.Errorf("сетевых вызовов %d, ожидался один — проба не должна была сгореть", llm.calls)
+	}
+	if res.Source != SourceLLM {
+		t.Errorf("источник = %q, ожидался llm", res.Source)
+	}
+}
+
+func TestZeroAmountIsNotAnExpense(t *testing.T) {
+	// В базе стоит check (amount > 0): деградировать ноль нельзя, иначе
+	// вставка упадёт и запись потеряется.
+	llm := &failingLLM{}
+	svc := NewService(&fakeDict{}, llm, openGate{}, denyBudget{}, quietLog())
+
+	if _, err := svc.Classify(context.Background(), 1, "0 тест"); err != ErrNoAmount {
+		t.Errorf("ошибка = %v, ожидалась ErrNoAmount", err)
+	}
+}
+
+func TestSchemaErrorResetsFailureStreak(t *testing.T) {
+	// Ответ не по схеме означает, что сервис жив: серия отказов прерывается.
+	b, _ := newTestBreaker()
+	b.Record(httpErr())
+	b.Record(httpErr())
+	b.Record(&Error{Kind: storage.ErrKindSchema, Err: errors.New("не по схеме")})
+	b.Record(httpErr())
+
+	if !b.Allow() {
+		t.Error("breaker открылся по ошибкам, идущим не подряд")
+	}
+}

@@ -35,7 +35,10 @@ type UsageRecorder interface {
 // Error — ошибка обращения к модели с видом из §7.
 type Error struct {
 	Kind string
-	Err  error
+	// Retryable — есть ли смысл в повторе. Квоту и неверный ключ повтор не
+	// лечит, поломку сервиса и таймаут — лечит.
+	Retryable bool
+	Err       error
 }
 
 func (e *Error) Error() string { return e.Kind + ": " + e.Err.Error() }
@@ -111,14 +114,12 @@ func (y *Yandex) Parse(ctx context.Context, text string, cats []storage.Category
 		}
 		lastErr = err
 
-		switch ErrKind(err) {
-		case storage.ErrKindTimeout, storage.ErrKindHTTP:
+		var e *Error
+		if errors.As(err, &e) && e.Retryable {
 			y.log.Warn("модель не ответила, повторяю", "err", err, "attempt", attempt+1)
 			continue
-		default:
-			// quota, schema и всё остальное ретраем не лечится.
-			return nil, err
 		}
+		return nil, err
 	}
 	return nil, lastErr
 }
@@ -147,7 +148,7 @@ func (y *Yandex) call(ctx context.Context, text string, cats []storage.Category)
 	if err != nil {
 		kind := transportErrKind(ctx, callCtx, err)
 		y.record(ctx, 0, 0, false, kind)
-		return nil, &Error{Kind: kind, Err: err}
+		return nil, &Error{Kind: kind, Retryable: retryableKind(kind), Err: err}
 	}
 	defer resp.Body.Close()
 
@@ -155,13 +156,20 @@ func (y *Yandex) call(ctx context.Context, text string, cats []storage.Category)
 	if err != nil {
 		kind := transportErrKind(ctx, callCtx, err)
 		y.record(ctx, 0, 0, false, kind)
-		return nil, &Error{Kind: kind, Err: err}
+		return nil, &Error{Kind: kind, Retryable: retryableKind(kind), Err: err}
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		kind := httpErrKind(resp.StatusCode, raw)
 		y.record(ctx, 0, 0, false, kind)
-		return nil, &Error{Kind: kind, Err: fmt.Errorf("HTTP %d: %s", resp.StatusCode, trimForLog(raw))}
+		return nil, &Error{
+			Kind: kind,
+			// Повторяем только поломку сервиса. Неверный ключ и битый запрос
+			// повтором не лечатся, но в счётчик breaker идут: иначе бот будет
+			// долбиться в сеть на каждое сообщение (§13, проверка фазы 3).
+			Retryable: kind == storage.ErrKindHTTP && resp.StatusCode >= 500,
+			Err:       fmt.Errorf("HTTP %d: %s", resp.StatusCode, trimForLog(raw)),
+		}
 	}
 
 	var envelope struct {
@@ -341,7 +349,15 @@ func transportErrKind(parent, call context.Context, err error) string {
 	}
 }
 
+// retryableKind — стоит ли повторять при ошибке транспорта.
+func retryableKind(kind string) bool {
+	return kind == storage.ErrKindTimeout || kind == storage.ErrKindHTTP
+}
+
 // httpErrKind различает исчерпанную квоту и обычную поломку сервиса (§7).
+// Любой другой отказ сервиса — в том числе 401 при неверном ключе — считается
+// http: такие ошибки должны копиться в breaker, иначе бот будет долбиться
+// в сеть на каждое сообщение (§13).
 func httpErrKind(status int, body []byte) string {
 	if status == http.StatusPaymentRequired || status == http.StatusTooManyRequests {
 		return storage.ErrKindQuota
@@ -357,7 +373,7 @@ func httpErrKind(status int, body []byte) string {
 			return storage.ErrKindQuota
 		}
 	}
-	return storage.ErrKindOther
+	return storage.ErrKindHTTP
 }
 
 func trimForLog(b []byte) string {

@@ -113,7 +113,9 @@ func NewService(dict Dict, llm LLM, breaker Breakable, budget Budgetable, log *s
 // тогда нечего. Во всех остальных случаях результат есть, пусть и
 // деградированный. Потеря записи из-за недоступности API недопустима (§8).
 func (s *Service) Classify(ctx context.Context, userID int64, text string) (*Result, error) {
-	amounts := tokens.Extract(text)
+	// Ноль и минус тратой быть не могут — в базе стоит check (amount > 0),
+	// и деградированный путь такую запись всё равно не сохранил бы.
+	amounts := positive(tokens.Extract(text))
 	if len(amounts) == 0 {
 		return nil, ErrNoAmount
 	}
@@ -132,11 +134,13 @@ func (s *Service) Classify(ctx context.Context, userID int64, text string) (*Res
 		return res, nil
 	}
 
-	if !s.breaker.Allow() {
-		return s.degrade(text, amounts, "breaker открыт"), nil
-	}
+	// Бюджет проверяется первым: Breaker.Allow расходует пробную попытку,
+	// и тратить её на вызов, которого всё равно не будет, нельзя.
 	if !s.budget.Allow(ctx) {
 		return s.degrade(text, amounts, "месячный потолок токенов исчерпан"), nil
+	}
+	if !s.breaker.Allow() {
+		return s.degrade(text, amounts, "breaker открыт"), nil
 	}
 
 	raw, err := s.llm.Parse(ctx, text, cats)
@@ -177,6 +181,17 @@ func (s *Service) degrade(text string, amounts []decimal.Decimal, reason string)
 			NeedsClassification: true,
 		}},
 	}
+}
+
+// positive оставляет только суммы больше нуля.
+func positive(amounts []decimal.Decimal) []decimal.Decimal {
+	out := make([]decimal.Decimal, 0, len(amounts))
+	for _, a := range amounts {
+		if a.IsPositive() {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // categoryByName — вспомогательный поиск категории по имени, регистр не важен.

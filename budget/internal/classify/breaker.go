@@ -57,40 +57,58 @@ func (b *Breaker) Record(err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if err == nil {
-		if b.failures > 0 || !b.openUntil.IsZero() {
+	// Ответ не по схеме означает, что сервис жив и отвечает: счётчик подряд
+	// идущих отказов сервиса такой ответ обнуляет, как и успех.
+	alive := err == nil || ErrKind(err) == storage.ErrKindSchema
+
+	if b.probing {
+		// Проба отработала. Только успех закрывает breaker — иначе ждём
+		// ещё один срок остывания. Сбрасывать probing обязательно: иначе
+		// breaker залипнет открытым навсегда.
+		b.probing = false
+		if err == nil {
+			b.failures, b.openUntil = 0, time.Time{}
 			b.log.Info("breaker закрыт")
+			return
 		}
-		b.failures, b.probing, b.openUntil = 0, false, time.Time{}
+		b.openUntil = b.now().Add(b.cooldown)
+		b.log.Warn("пробный запрос не удался, breaker снова открыт",
+			"kind", ErrKind(err), "до", b.openUntil)
 		return
 	}
 
-	switch ErrKind(err) {
-	case storage.ErrKindQuota, storage.ErrKindHTTP:
-	default:
+	if alive {
+		if b.failures > 0 || !b.openUntil.IsZero() {
+			b.log.Info("breaker закрыт")
+		}
+		b.failures, b.openUntil = 0, time.Time{}
+		return
+	}
+
+	if kind := ErrKind(err); kind != storage.ErrKindQuota && kind != storage.ErrKindHTTP {
 		return
 	}
 
 	b.failures++
-	if b.probing {
-		// Пробная попытка провалилась — снова закрываемся на полный срок.
-		b.probing = false
-		b.openUntil = b.now().Add(b.cooldown)
-		b.log.Warn("пробный запрос не удался, breaker снова открыт", "до", b.openUntil)
-		return
-	}
 	if b.failures >= breakerThreshold && b.openUntil.IsZero() {
 		b.openUntil = b.now().Add(b.cooldown)
 		b.log.Warn("breaker открыт", "подряд_ошибок", b.failures, "до", b.openUntil)
 	}
 }
 
-// State отдаёт состояние для команды /лимит (§7).
+// State отдаёт состояние для команды /лимит (§7). Пока не отработала пробная
+// попытка, breaker считается открытым: сеть для остальных всё ещё закрыта.
 func (b *Breaker) State() (open bool, until time.Time) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.openUntil.IsZero() || !b.now().Before(b.openUntil) {
+	if b.openUntil.IsZero() {
+		return false, time.Time{}
+	}
+	if b.probing {
+		return true, b.openUntil
+	}
+	if !b.now().Before(b.openUntil) {
 		return false, time.Time{}
 	}
 	return true, b.openUntil
