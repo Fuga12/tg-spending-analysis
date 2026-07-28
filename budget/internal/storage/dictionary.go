@@ -120,3 +120,17 @@ func (s *Store) UpdateCategory(ctx context.Context, id int32, name, hint string)
 	}
 	return tag.RowsAffected() > 0, nil
 }
+
+// CreateCategory заводит новую категорию в конец списка.
+//
+// plan.md §14 запрещал больше четырнадцати — ограничение снято по решению
+// заказчика. Цена известна: список уходит в enum JSON-схемы, и каждая
+// категория делает промпт чуть длиннее, а выбор модели чуть труднее.
+func (s *Store) CreateCategory(ctx context.Context, name, hint, beneficiary string) (Category, error) {
+	c := Category{Name: name, Hint: hint, DefaultBeneficiary: beneficiary}
+	err := s.pool.QueryRow(ctx, `
+		insert into categories (name, default_beneficiary, sort_order, hint)
+		values ($1, $2, (select coalesce(max(sort_order), 0) + 10 from categories), $3)
+		returning id, sort_order`, name, beneficiary, hint).Scan(&c.ID, &c.SortOrder)
+	return c, err
+}

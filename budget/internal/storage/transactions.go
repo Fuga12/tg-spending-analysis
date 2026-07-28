@@ -76,12 +76,15 @@ func (s *Store) Transaction(ctx context.Context, id int64) (Transaction, error) 
 	return t, nil
 }
 
-// SetBeneficiary меняет, на кого потрачено. Правку разрешаем только тому, кто
-// платил: чужие траты не свои (§9).
-func (s *Store) SetBeneficiary(ctx context.Context, id, payerID int64, beneficiary string) (bool, error) {
+// SetBeneficiary меняет, на кого потрачено.
+//
+// Правит любой из двоих: бюджет общий, и запрет трогать запись партнёра
+// означал бы, что опечатку в его трате некому исправить, пока он не дойдёт
+// до телефона. Это осознанное отступление от plan.md §9.
+func (s *Store) SetBeneficiary(ctx context.Context, id int64, beneficiary string) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
-		update transactions set beneficiary = $3, updated_at = now()
-		where id = $1 and payer_id = $2 and deleted_at is null`, id, payerID, beneficiary)
+		update transactions set beneficiary = $2, updated_at = now()
+		where id = $1 and deleted_at is null`, id, beneficiary)
 	if err != nil {
 		return false, err
 	}
@@ -89,12 +92,12 @@ func (s *Store) SetBeneficiary(ctx context.Context, id, payerID int64, beneficia
 }
 
 // SetCategory меняет категорию и снимает флаг «разобрать позже».
-func (s *Store) SetCategory(ctx context.Context, id, payerID int64, categoryID int32) (bool, error) {
+func (s *Store) SetCategory(ctx context.Context, id int64, categoryID int32) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
 		update transactions
-		set category_id = $3, needs_classification = false, needs_review = false,
+		set category_id = $2, needs_classification = false, needs_review = false,
 		    updated_at = now()
-		where id = $1 and payer_id = $2 and deleted_at is null`, id, payerID, categoryID)
+		where id = $1 and deleted_at is null`, id, categoryID)
 	if err != nil {
 		return false, err
 	}
@@ -117,11 +120,12 @@ func (s *Store) MarkForReview(ctx context.Context, id int64, categoryID int32) (
 	return tag.RowsAffected() > 0, nil
 }
 
-// DeleteTransaction — удаление только мягкое (§3).
-func (s *Store) DeleteTransaction(ctx context.Context, id, payerID int64) (bool, error) {
+// DeleteTransaction — удаление только мягкое (§3). Удалить может любой
+// из двоих, вернуть тоже.
+func (s *Store) DeleteTransaction(ctx context.Context, id int64) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
 		update transactions set deleted_at = now()
-		where id = $1 and payer_id = $2 and deleted_at is null`, id, payerID)
+		where id = $1 and deleted_at is null`, id)
 	if err != nil {
 		return false, err
 	}
@@ -419,7 +423,7 @@ type TransactionPatch struct {
 // expected — updated_at, который видел клиент (nil, если запись ещё не
 // правили). Расхождение означает, что запись успели изменить: возвращаем
 // ErrVersionConflict, а не затираем чужую работу.
-func (s *Store) UpdateTransaction(ctx context.Context, id, payerID int64, p TransactionPatch, expected *time.Time) (Transaction, error) {
+func (s *Store) UpdateTransaction(ctx context.Context, id int64, p TransactionPatch, expected *time.Time) (Transaction, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Transaction{}, err
@@ -430,20 +434,16 @@ func (s *Store) UpdateTransaction(ctx context.Context, id, payerID int64, p Tran
 		current   time.Time
 		hasUpd    bool
 		updatedAt *time.Time
-		owner     int64
 		deleted   *time.Time
 	)
 	err = tx.QueryRow(ctx, `
-		select payer_id, updated_at, deleted_at from transactions
-		where id = $1 for update`, id).Scan(&owner, &updatedAt, &deleted)
+		select updated_at, deleted_at from transactions
+		where id = $1 for update`, id).Scan(&updatedAt, &deleted)
 	if err != nil {
 		if isNoRows(err) {
 			return Transaction{}, ErrNoRows
 		}
 		return Transaction{}, err
-	}
-	if owner != payerID {
-		return Transaction{}, ErrNotOwner
 	}
 	if deleted != nil && !p.Restore {
 		return Transaction{}, ErrNoRows
@@ -509,23 +509,15 @@ func (s *Store) UpdateTransaction(ctx context.Context, id, payerID int64, p Tran
 // RestoreTransaction снимает мягкое удаление. Версия здесь не проверяется:
 // у клиента её нет и быть не может, а без возврата кнопка «Вернуть» в тосте
 // была бы обманом (webapp-design.md §4.2).
-func (s *Store) RestoreTransaction(ctx context.Context, id, payerID int64) (Transaction, error) {
-	var owner int64
-	err := s.pool.QueryRow(ctx, `select payer_id from transactions where id = $1`, id).Scan(&owner)
-	if err != nil {
-		if isNoRows(err) {
-			return Transaction{}, ErrNoRows
-		}
-		return Transaction{}, err
-	}
-	if owner != payerID {
-		return Transaction{}, ErrNotOwner
-	}
-
-	if _, err := s.pool.Exec(ctx, `
+func (s *Store) RestoreTransaction(ctx context.Context, id int64) (Transaction, error) {
+	tag, err := s.pool.Exec(ctx, `
 		update transactions set deleted_at = null, updated_at = now()
-		where id = $1 and payer_id = $2`, id, payerID); err != nil {
+		where id = $1`, id)
+	if err != nil {
 		return Transaction{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		return Transaction{}, ErrNoRows
 	}
 	return s.Transaction(ctx, id)
 }

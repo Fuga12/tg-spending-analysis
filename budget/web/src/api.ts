@@ -107,6 +107,9 @@ export const api = {
   patchCategory: (id: number, body: { name: string; hint: string }) =>
     send<Category>("PATCH", `/api/categories/${id}`, body),
 
+  createCategory: (body: { name: string; hint: string; beneficiary: string }) =>
+    send<Category>("POST", "/api/categories", body),
+
   daily: (year: number, month: number) =>
     get<DayPoint[]>(`/api/report/daily?year=${year}&month=${month}`),
 

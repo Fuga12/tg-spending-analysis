@@ -106,7 +106,7 @@ func TestEditRequiresVersion(t *testing.T) {
 	_ = json.Unmarshal(body, &first)
 
 	// Кто-то другой правит ту же запись.
-	if _, err := store.SetBeneficiary(context.Background(), id, testUserID, classify.BenBoth); err != nil {
+	if _, err := store.SetBeneficiary(context.Background(), id, classify.BenBoth); err != nil {
 		t.Fatalf("чужая правка: %v", err)
 	}
 
@@ -132,22 +132,28 @@ func TestEditRequiresVersion(t *testing.T) {
 	}
 }
 
-func TestCannotEditPartnersRecord(t *testing.T) {
+func TestPartnersRecordIsEditable(t *testing.T) {
+	// Бюджет общий: опечатку в трате партнёра должно быть кому исправить,
+	// не дожидаясь, пока он дойдёт до телефона.
 	store, base, client := loggedIn(t)
-	if err := store.UpsertUser(context.Background(), 1002, "Аня"); err != nil {
+	if err := store.UpsertUser(context.Background(), 1002, "Ульяночка"); err != nil {
 		t.Fatalf("партнёр: %v", err)
 	}
 	id := addTx(t, store, 1002, "900", "её трата", classify.KindExpense, time.Now(), nil)
 
-	resp, _ := send(t, client, http.MethodPatch, base+"/api/transactions/"+itoa(int(id)),
+	resp, body := send(t, client, http.MethodPatch, base+"/api/transactions/"+itoa(int(id)),
 		map[string]any{"amount": "100"})
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("код = %d, ожидался 403", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("код = %d, тело %s", resp.StatusCode, body)
 	}
 
 	tx, _ := store.Transaction(context.Background(), id)
-	if !tx.Amount.Equal(decimal.RequireFromString("900")) {
-		t.Errorf("сумма чужой записи изменилась на %s", tx.Amount)
+	if !tx.Amount.Equal(decimal.RequireFromString("100")) {
+		t.Errorf("сумма = %s, правка не применилась", tx.Amount)
+	}
+	// А вот плательщик не меняется: платила всё равно она.
+	if tx.PayerID != 1002 {
+		t.Errorf("плательщик = %d, правка не должна переписывать автора", tx.PayerID)
 	}
 }
 

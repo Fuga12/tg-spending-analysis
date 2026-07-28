@@ -417,7 +417,11 @@ export default function App() {
           categories={categories}
           onClose={() => setEditingCats(false)}
           onSaved={(c) => {
-            setCategories((prev) => prev.map((x) => (x.id === c.id ? c : x)));
+            setCategories((prev) =>
+              prev.some((x) => x.id === c.id)
+                ? prev.map((x) => (x.id === c.id ? c : x))
+                : [...prev, c],
+            );
             void load();
           }}
         />

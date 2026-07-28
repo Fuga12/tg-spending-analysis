@@ -45,7 +45,10 @@ export default function Sheet({ tx, categories, defaultDay, today, partnerName, 
   const [conflict, setConflict] = useState<Tx | null>(null);
   const [confirming, setConfirming] = useState(false);
 
-  const readOnly = tx !== null && !tx.mine;
+  // Чужую запись править можно: бюджет общий. Плашка остаётся, чтобы было
+  // видно, чья это трата, — но полей не блокирует.
+  const readOnly = false;
+  const partners = tx !== null && !tx.mine;
   // Сутки вперёд сервер разрешает (webapp.md §4): пусть и поле разрешает.
   const maxDay = shiftDay(today, 1);
   const transfer = kind === "transfer";
@@ -198,8 +201,8 @@ export default function Sheet({ tx, categories, defaultDay, today, partnerName, 
           {tx ? (transfer ? "Перевод" : kind === "income" ? "Поступление" : "Трата") : "Новая запись"}
         </h2>
 
-        {readOnly && (
-          <div className="sheet__badge">Запись {partnerName ?? "партнёра"} — можно только смотреть</div>
+        {partners && (
+          <div className="sheet__badge">Трата {partnerName ?? "партнёра"} — правки увидит и она</div>
         )}
 
         <label className="sheet__amount">

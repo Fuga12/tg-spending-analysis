@@ -219,7 +219,7 @@ func TestMarkForReviewDoesNotClobberManual(t *testing.T) {
 	}
 
 	// Человек успел раньше.
-	if ok, err := store.SetCategory(context.Background(), id, testUserID, food); err != nil || !ok {
+	if ok, err := store.SetCategory(context.Background(), id, food); err != nil || !ok {
 		t.Fatalf("ручная категория: ok=%v err=%v", ok, err)
 	}
 	// Воркер вернулся ни с чем.

@@ -6,7 +6,8 @@ import { api, Category } from "./api";
  * к модели: подсказка — единственный способ научить её различать то, что
  * путает именно нас («самокат» — это аренда или магазин?).
  *
- * Добавлять и удалять нельзя: категорий ровно четырнадцать (plan.md §14).
+ * Свои категории добавлять можно — но каждая удлиняет промпт и усложняет
+ * модели выбор, поэтому список стоит держать коротким.
  */
 export default function Categories({
   categories,
@@ -18,6 +19,7 @@ export default function Categories({
   onSaved: (c: Category) => void;
 }) {
   const [editing, setEditing] = useState<Category | null>(null);
+  const [creating, setCreating] = useState(false);
 
   return (
     <div className="backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
@@ -28,24 +30,33 @@ export default function Categories({
           Подсказка уходит в запрос к модели — по ней она решает, куда отнести трату.
         </p>
 
-        {editing ? (
+        {editing || creating ? (
           <CategoryForm
             category={editing}
-            onCancel={() => setEditing(null)}
+            onCancel={() => {
+              setEditing(null);
+              setCreating(false);
+            }}
             onSaved={(c) => {
               onSaved(c);
               setEditing(null);
+              setCreating(false);
             }}
           />
         ) : (
-          <div className="cats">
-            {categories.map((c) => (
-              <button key={c.id} className="cats__row" onClick={() => setEditing(c)}>
-                <span className="cats__name">{c.name}</span>
-                <span className="cats__hint">{c.hint || "без подсказки"}</span>
-              </button>
-            ))}
-          </div>
+          <>
+            <div className="cats">
+              {categories.map((c) => (
+                <button key={c.id} className="cats__row" onClick={() => setEditing(c)}>
+                  <span className="cats__name">{c.name}</span>
+                  <span className="cats__hint">{c.hint || "без подсказки"}</span>
+                </button>
+              ))}
+            </div>
+            <button className="btn" onClick={() => setCreating(true)}>
+              Добавить категорию
+            </button>
+          </>
         )}
       </div>
     </div>
@@ -57,12 +68,12 @@ function CategoryForm({
   onCancel,
   onSaved,
 }: {
-  category: Category;
+  category: Category | null;
   onCancel: () => void;
   onSaved: (c: Category) => void;
 }) {
-  const [name, setName] = useState(category.name);
-  const [hint, setHint] = useState(category.hint);
+  const [name, setName] = useState(category?.name ?? "");
+  const [hint, setHint] = useState(category?.hint ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -70,8 +81,10 @@ function CategoryForm({
     setBusy(true);
     setError(null);
     try {
-      const saved = await api.patchCategory(category.id, { name, hint });
-      onSaved({ ...category, ...saved });
+      const saved = category
+        ? await api.patchCategory(category.id, { name, hint })
+        : await api.createCategory({ name, hint, beneficiary: "both" });
+      onSaved({ ...(category ?? { beneficiary: "both" }), ...saved } as Category);
     } catch (err) {
       setError(err instanceof Error ? err.message : "не сохранилось");
       setBusy(false);

@@ -726,17 +726,19 @@ button {
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
 }
 
+/* В углу, а не по центру: центр экрана — место для содержимого, и всплывашка
+   там перекрывает список ровно там, куда смотришь. Слева — чтобы не спорить
+   с кнопкой «+». */
 .toast {
   position: fixed;
   left: 16px;
-  right: 16px;
-  bottom: calc(84px + env(safe-area-inset-bottom));
+  right: auto;
+  bottom: calc(16px + env(safe-area-inset-bottom));
   z-index: 50;
   display: flex;
   align-items: center;
   gap: 12px;
-  max-width: 480px;
-  margin: 0 auto;
+  max-width: min(340px, calc(100vw - 88px));
   min-height: 48px;
   padding: 0 16px;
   border-radius: var(--r-field);

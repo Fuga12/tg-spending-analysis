@@ -70,7 +70,7 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 	// Возврат удалённой — отдельная операция: версии у клиента нет и быть не
 	// может, а требовать её значит сделать «Вернуть» неработающей кнопкой.
 	if p.Restore && onlyRestore(patch) {
-		tx, err := s.store.RestoreTransaction(r.Context(), id, userID(r))
+		tx, err := s.store.RestoreTransaction(r.Context(), id)
 		if err != nil {
 			s.writeUpdateError(w, r, id, err)
 			return
@@ -90,7 +90,7 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 	before, err := s.store.Transaction(r.Context(), id)
 	learnable := err == nil && !before.NeedsClassification && !before.NeedsReview
 
-	tx, err := s.store.UpdateTransaction(r.Context(), id, userID(r), p, version)
+	tx, err := s.store.UpdateTransaction(r.Context(), id, p, version)
 	if err != nil {
 		s.writeUpdateError(w, r, id, err)
 		return
@@ -117,19 +117,13 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deleted, err := s.store.DeleteTransaction(r.Context(), id, userID(r))
+	deleted, err := s.store.DeleteTransaction(r.Context(), id)
 	if err != nil {
 		s.log.Error("удаление", "err", err, "tx", id)
 		writeError(w, http.StatusInternalServerError, "база не отвечает")
 		return
 	}
 	if !deleted {
-		// Различаем чтением: обвинять человека в чужой трате на его же
-		// удалённой записи — плохой ответ.
-		if tx, readErr := s.store.Transaction(r.Context(), id); readErr == nil && tx.PayerID != userID(r) {
-			s.writeUpdateError(w, r, id, storage.ErrNotOwner)
-			return
-		}
 		s.writeUpdateError(w, r, id, storage.ErrNoRows)
 		return
 	}
@@ -302,8 +296,6 @@ func (s *Server) writeUpdateError(w http.ResponseWriter, r *http.Request, id int
 			return
 		}
 		writeError(w, http.StatusConflict, "запись изменилась")
-	case errors.Is(err, storage.ErrNotOwner):
-		writeError(w, http.StatusForbidden, "это запись партнёра")
 	case errors.Is(err, storage.ErrNoRows):
 		writeError(w, http.StatusNotFound, "этой записи больше нет")
 	default:
@@ -427,8 +419,9 @@ func pathID(path string) (int64, bool) {
 // categoryPatch — имя и подсказка. Подсказка уходит в JSON-схему запроса и
 // прямо влияет на то, как модель раскладывает траты (plan.md §6).
 type categoryPatch struct {
-	Name string `json:"name"`
-	Hint string `json:"hint"`
+	Name        string `json:"name"`
+	Hint        string `json:"hint"`
+	Beneficiary string `json:"beneficiary"`
 }
 
 // Границы: имя в enum схемы, подсказка в описание поля. Длинные строки
@@ -436,6 +429,7 @@ type categoryPatch struct {
 const (
 	maxCategoryName = 32
 	maxCategoryHint = 120
+	maxCategories   = 30
 )
 
 func (s *Server) handleCategoryPatch(w http.ResponseWriter, r *http.Request) {
@@ -493,4 +487,56 @@ func trimTo(s string, n int) string {
 		return s
 	}
 	return strings.TrimSpace(string(r[:n]))
+}
+
+// handleCategoryCreate заводит новую категорию.
+func (s *Server) handleCategoryCreate(w http.ResponseWriter, r *http.Request) {
+	var body categoryPatch
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "не разобрал запрос")
+		return
+	}
+
+	name := trimTo(strings.TrimSpace(body.Name), maxCategoryName)
+	hint := trimTo(strings.TrimSpace(body.Hint), maxCategoryHint)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "у категории должно быть название")
+		return
+	}
+
+	cats, err := s.store.Categories(r.Context())
+	if err != nil {
+		s.log.Error("категории", "err", err)
+		writeError(w, http.StatusInternalServerError, "база не отвечает")
+		return
+	}
+	for _, c := range cats {
+		if strings.EqualFold(c.Name, name) {
+			writeError(w, http.StatusBadRequest, "категория с таким названием уже есть")
+			return
+		}
+	}
+	// Каждая категория удлиняет промпт и усложняет выбор модели, поэтому
+	// какой-то потолок нужен — но щедрый.
+	if len(cats) >= maxCategories {
+		writeError(w, http.StatusBadRequest, "категорий уже слишком много, дальше модель начнёт путаться")
+		return
+	}
+
+	beneficiary := body.Beneficiary
+	if !isBeneficiary(beneficiary) {
+		beneficiary = classify.BenBoth
+	}
+
+	created, err := s.store.CreateCategory(r.Context(), name, hint, beneficiary)
+	if err != nil {
+		s.log.Error("создание категории", "err", err)
+		writeError(w, http.StatusInternalServerError, "не смог создать")
+		return
+	}
+	s.log.Info("категория создана", "id", created.ID, "name", name)
+	writeJSON(w, http.StatusCreated, categoryView{
+		ID: created.ID, Name: created.Name, Hint: created.Hint,
+		Beneficiary: created.DefaultBeneficiary,
+	})
 }

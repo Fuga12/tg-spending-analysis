@@ -79,7 +79,7 @@ func TestDegradedTransactionHasNoCategory(t *testing.T) {
 	}
 }
 
-func TestOnlyPayerCanEditTransaction(t *testing.T) {
+func TestAnyoneCanEditTransaction(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	mustUser(t, s, 1)
@@ -97,27 +97,21 @@ func TestOnlyPayerCanEditTransaction(t *testing.T) {
 		t.Fatalf("вставка: %v", err)
 	}
 
-	// Второй пользователь трогать чужую трату не может (§9).
+	// Бюджет общий: править запись партнёра разрешено обоим.
 	for _, check := range []struct {
 		name string
 		call func() (bool, error)
 	}{
-		{"бенефициар", func() (bool, error) { return s.SetBeneficiary(ctx, id, 2, "both") }},
-		{"категория", func() (bool, error) { return s.SetCategory(ctx, id, 2, taxi) }},
-		{"удаление", func() (bool, error) { return s.DeleteTransaction(ctx, id, 2) }},
+		{"бенефициар", func() (bool, error) { return s.SetBeneficiary(ctx, id, "both") }},
+		{"категория", func() (bool, error) { return s.SetCategory(ctx, id, taxi) }},
 	} {
 		ok, err := check.call()
 		if err != nil {
 			t.Fatalf("%s: %v", check.name, err)
 		}
-		if ok {
-			t.Errorf("%s: чужую трату менять нельзя", check.name)
+		if !ok {
+			t.Errorf("%s: править чужую трату разрешено", check.name)
 		}
-	}
-
-	// Плательщику — можно.
-	if ok, err := s.SetBeneficiary(ctx, id, 1, "both"); err != nil || !ok {
-		t.Fatalf("плательщик не смог сменить бенефициара: ok=%v err=%v", ok, err)
 	}
 	tx, _ := s.Transaction(ctx, id)
 	if tx.Beneficiary != "both" {
@@ -139,7 +133,7 @@ func TestSetCategoryClearsNeedsClassification(t *testing.T) {
 		RawText: "600 лимонад", NeedsClassification: true, SpentAt: time.Now(),
 	})
 
-	if ok, err := s.SetCategory(ctx, id, 1, food); err != nil || !ok {
+	if ok, err := s.SetCategory(ctx, id, food); err != nil || !ok {
 		t.Fatalf("смена категории: ok=%v err=%v", ok, err)
 	}
 	tx, _ := s.Transaction(ctx, id)
@@ -159,7 +153,7 @@ func TestDeleteIsSoftAndHidesTransaction(t *testing.T) {
 		RawText: "такси 450", SpentAt: time.Now(),
 	})
 
-	if ok, err := s.DeleteTransaction(ctx, id, 1); err != nil || !ok {
+	if ok, err := s.DeleteTransaction(ctx, id); err != nil || !ok {
 		t.Fatalf("удаление: ok=%v err=%v", ok, err)
 	}
 	if _, err := s.Transaction(ctx, id); err == nil {
@@ -177,7 +171,7 @@ func TestDeleteIsSoftAndHidesTransaction(t *testing.T) {
 	}
 
 	// Повторное удаление ничего не меняет.
-	if ok, _ := s.DeleteTransaction(ctx, id, 1); ok {
+	if ok, _ := s.DeleteTransaction(ctx, id); ok {
 		t.Error("повторное удаление не должно проходить")
 	}
 }
@@ -220,7 +214,7 @@ func TestExpensesFiltersPeriodKindAndDeleted(t *testing.T) {
 			t.Fatalf("вставка: %v", err)
 		}
 		if deleted {
-			if _, err := s.DeleteTransaction(ctx, id, 1); err != nil {
+			if _, err := s.DeleteTransaction(ctx, id); err != nil {
 				t.Fatalf("удаление: %v", err)
 			}
 		}
@@ -275,7 +269,7 @@ func TestPendingClassification(t *testing.T) {
 	}
 
 	// После простановки категории запись из очереди уходит.
-	if ok, err := s.SetCategory(ctx, id, 1, food); err != nil || !ok {
+	if ok, err := s.SetCategory(ctx, id, food); err != nil || !ok {
 		t.Fatalf("простановка категории: ok=%v err=%v", ok, err)
 	}
 	if pending, _ = s.PendingClassification(ctx, 20); len(pending) != 0 {

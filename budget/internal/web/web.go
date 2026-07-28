@@ -75,6 +75,7 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 	api.HandleFunc("PATCH /api/transactions/{id}", s.handlePatch)
 	api.HandleFunc("DELETE /api/transactions/{id}", s.handleDelete)
 	api.HandleFunc("PATCH /api/categories/{id}", s.handleCategoryPatch)
+	api.HandleFunc("POST /api/categories", s.handleCategoryCreate)
 	// Свои заглушки на прочие методы: встроенный 405 у ServeMux — текстовый,
 	// а под /api всё обязано быть JSON (webapp.md §4).
 	api.HandleFunc("/api/me", methodNotAllowed)

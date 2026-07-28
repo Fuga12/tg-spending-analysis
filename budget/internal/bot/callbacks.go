@@ -20,12 +20,12 @@ func (b *Bot) onBeneficiary(beneficiary string) tele.HandlerFunc {
 		ctx, cancel := b.ctx()
 		defer cancel()
 
-		tx, err := b.owned(ctx, c)
+		tx, err := b.txFromCallback(ctx, c)
 		if err != nil {
 			return respond(c, err.Error())
 		}
 
-		if _, err := b.store.SetBeneficiary(ctx, tx.ID, tx.PayerID, beneficiary); err != nil {
+		if _, err := b.store.SetBeneficiary(ctx, tx.ID, beneficiary); err != nil {
 			b.log.Error("смена бенефициара", "err", err, "tx", tx.ID)
 			return respond(c, "База не отвечает")
 		}
@@ -44,7 +44,7 @@ func (b *Bot) onCategoryOpen(c tele.Context) error {
 	ctx, cancel := b.ctx()
 	defer cancel()
 
-	tx, err := b.owned(ctx, c)
+	tx, err := b.txFromCallback(ctx, c)
 	if err != nil {
 		return respond(c, err.Error())
 	}
@@ -74,12 +74,12 @@ func (b *Bot) onCategoryPick(c tele.Context) error {
 		return respond(c, "Не понял выбор")
 	}
 
-	tx, err := b.owned(ctx, c)
+	tx, err := b.txFromCallback(ctx, c)
 	if err != nil {
 		return respond(c, err.Error())
 	}
 
-	if _, err := b.store.SetCategory(ctx, tx.ID, tx.PayerID, int32(catID)); err != nil {
+	if _, err := b.store.SetCategory(ctx, tx.ID, int32(catID)); err != nil {
 		b.log.Error("смена категории", "err", err, "tx", tx.ID)
 		return respond(c, "База не отвечает")
 	}
@@ -107,12 +107,12 @@ func (b *Bot) onDelete(c tele.Context) error {
 	ctx, cancel := b.ctx()
 	defer cancel()
 
-	tx, err := b.owned(ctx, c)
+	tx, err := b.txFromCallback(ctx, c)
 	if err != nil {
 		return respond(c, err.Error())
 	}
 
-	if _, err := b.store.DeleteTransaction(ctx, tx.ID, tx.PayerID); err != nil {
+	if _, err := b.store.DeleteTransaction(ctx, tx.ID); err != nil {
 		b.log.Error("удаление траты", "err", err, "tx", tx.ID)
 		return respond(c, "База не отвечает")
 	}
@@ -123,16 +123,16 @@ func (b *Bot) onDelete(c tele.Context) error {
 	return c.Respond()
 }
 
-// Ответы пользователю, когда правка невозможна. Различать «чужая» и «уже
-// удалена» важно: иначе бот обвиняет человека в чужой трате на его же.
 var (
 	errNotFound = errors.New("Трата уже удалена")
-	errNotYours = errors.New("Это не твоя трата")
 	errBadData  = errors.New("Не понял, какая это трата")
 )
 
-// owned читает транзакцию из коллбэка и проверяет, что жал её плательщик (§9).
-func (b *Bot) owned(ctx context.Context, c tele.Context) (storage.Transaction, error) {
+// txFromCallback читает транзакцию, к которой относится нажатая кнопка.
+//
+// Проверки «это твоя трата» здесь больше нет: бюджет общий, и править
+// записи друг друга разрешено обоим (см. README, расхождения с планом).
+func (b *Bot) txFromCallback(ctx context.Context, c tele.Context) (storage.Transaction, error) {
 	idPart, _, _ := strings.Cut(callbackData(c), ":")
 	txID, err := strconv.ParseInt(idPart, 10, 64)
 	if err != nil {
@@ -142,9 +142,6 @@ func (b *Bot) owned(ctx context.Context, c tele.Context) (storage.Transaction, e
 	tx, err := b.store.Transaction(ctx, txID)
 	if err != nil {
 		return storage.Transaction{}, errNotFound
-	}
-	if tx.PayerID != c.Sender().ID {
-		return storage.Transaction{}, errNotYours
 	}
 	return tx, nil
 }
