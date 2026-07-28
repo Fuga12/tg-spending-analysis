@@ -109,6 +109,95 @@ func TestBackfillFillsCategory(t *testing.T) {
 	}
 }
 
+func TestBackfillRestoresLostAmounts(t *testing.T) {
+	// «вчера пятёрочка 1200 и такси 400» при лежащем API сохранилось одной
+	// записью на 1200 (§8). Вторая трата есть только в raw_text — воркер
+	// обязан её дописать, иначе она потеряна навсегда.
+	llm := &stubLLM{items: []classify.RawItem{
+		{Amount: "1200", Description: "пятёрочка", Category: "Продукты",
+			Beneficiary: classify.BenBoth, Kind: classify.KindExpense, DaysAgo: 1},
+		{Amount: "400", Description: "такси", Category: "Такси",
+			Beneficiary: classify.BenPayer, Kind: classify.KindExpense, DaysAgo: 1},
+	}}
+	budget := classify.NewBudget(2_000_000, &zeroUsage{}, nil, quietLog())
+	w, store := newBackfill(t, llm, classify.NewBreaker(time.Minute, quietLog()), budget)
+
+	ctx := context.Background()
+	id := degradedTx(t, store, 505, "1200", "вчера пятёрочка 1200 и такси 400")
+	w.Tick(ctx)
+
+	from := time.Now().AddDate(0, 0, -3)
+	to := time.Now().AddDate(0, 0, 1)
+	rows, err := store.Expenses(ctx, from, to)
+	if err != nil {
+		t.Fatalf("расходы: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("записей %d (%+v), ожидались две — вторая трата не должна теряться (§8)", len(rows), rows)
+	}
+
+	// И дата обеих — вчерашняя, как сказала модель.
+	tx, _ := store.Transaction(ctx, id)
+	if got := time.Since(tx.SpentAt).Hours(); got < 20 || got > 28 {
+		t.Errorf("дата траты сдвинута на %.0f часов, ожидались сутки (days_ago=1)", got)
+	}
+}
+
+func TestBackfillFixesKindAndDoesNotMemorizeIncome(t *testing.T) {
+	// Во время сбоя API доход записался расходом. Воркер обязан поправить
+	// вид операции, иначе зарплата попадёт в «Всего» отчёта.
+	llm := &stubLLM{items: []classify.RawItem{{
+		Amount: "50000", Description: "зарплата", Category: "Прочее",
+		Beneficiary: classify.BenPayer, Kind: classify.KindIncome,
+	}}}
+	budget := classify.NewBudget(2_000_000, &zeroUsage{}, nil, quietLog())
+	w, store := newBackfill(t, llm, classify.NewBreaker(time.Minute, quietLog()), budget)
+
+	ctx := context.Background()
+	id := degradedTx(t, store, 506, "50000", "зарплата 50000")
+	w.Tick(ctx)
+
+	tx, _ := store.Transaction(ctx, id)
+	if tx.Kind != classify.KindIncome {
+		t.Errorf("вид операции = %q, ожидался income", tx.Kind)
+	}
+	hits, err := store.LookupWords(ctx, 506, []string{"зарплата"})
+	if err != nil {
+		t.Fatalf("словарь: %v", err)
+	}
+	if _, ok := hits["зарплата"]; ok {
+		t.Error("слово дохода не должно уезжать в кэш: быстрый путь записал бы его расходом")
+	}
+}
+
+func TestBackfillClosesStaleRecord(t *testing.T) {
+	// Модель устойчиво не отвечает. Запись, провисевшую дольше staleAfter,
+	// надо закрыть, иначе воркер будет ходить в сеть по ней вечно.
+	llm := &stubLLM{err: &classify.Error{Kind: storage.ErrKindSchema, Err: context.Canceled}}
+	budget := classify.NewBudget(2_000_000, &zeroUsage{}, nil, quietLog())
+	w, store := newBackfill(t, llm, classify.NewBreaker(time.Minute, quietLog()), budget)
+
+	ctx := context.Background()
+	id := degradedTx(t, store, 507, "600", "600 непонятное")
+
+	w.Tick(ctx)
+	if tx, _ := store.Transaction(ctx, id); !tx.NeedsClassification {
+		t.Fatal("свежую запись закрывать рано — модель могла отвечать не по схеме разово")
+	}
+
+	// Прошло больше двух часов.
+	w.now = func() time.Time { return time.Now().Add(3 * time.Hour) }
+	w.Tick(ctx)
+
+	tx, _ := store.Transaction(ctx, id)
+	if tx.NeedsClassification {
+		t.Error("зависшая запись должна закрываться, а не запрашиваться вечно")
+	}
+	if llm.calls != 2 {
+		t.Errorf("сетевых вызовов %d, ожидались два", llm.calls)
+	}
+}
+
 func TestBackfillSkipsTickWhenBreakerOpen(t *testing.T) {
 	llm := &stubLLM{}
 	breaker := classify.NewBreaker(time.Hour, quietLog())

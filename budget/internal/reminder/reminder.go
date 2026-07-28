@@ -44,7 +44,12 @@ func (r *Reminder) Start() error {
 		return err
 	}
 
-	r.cron = cron.New(cron.WithLocation(r.cfg.TZ))
+	// Паника в задании не должна ронять весь процесс: cron.New по умолчанию
+	// её не перехватывает, вопреки собственному комментарию в библиотеке.
+	r.cron = cron.New(
+		cron.WithLocation(r.cfg.TZ),
+		cron.WithChain(cron.Recover(cron.PrintfLogger(recoverLogger{r.log}))),
+	)
 	spec := fmt.Sprintf("%d %d * * *", minute, hour)
 	if _, err := r.cron.AddFunc(spec, r.run); err != nil {
 		return err
@@ -73,7 +78,7 @@ func (r *Reminder) Notify(ctx context.Context, now time.Time) {
 	from, to := report.DayRange(now, r.cfg.TZ)
 
 	for _, userID := range r.cfg.AllowedUserIDs {
-		has, err := r.store.HasTransactions(ctx, userID, from, to)
+		has, err := r.store.HasRecordedOn(ctx, userID, from, to)
 		if err != nil {
 			r.log.Error("не проверил траты за день", "err", err, "user_id", userID)
 			continue
@@ -85,4 +90,11 @@ func (r *Reminder) Notify(ctx context.Context, now time.Time) {
 			r.log.Warn("не отправил напоминание", "err", err, "user_id", userID)
 		}
 	}
+}
+
+// recoverLogger переводит вывод cron.Recover в slog.
+type recoverLogger struct{ log *slog.Logger }
+
+func (r recoverLogger) Printf(format string, v ...any) {
+	r.log.Error("паника в напоминании", "msg", fmt.Sprintf(format, v...))
 }

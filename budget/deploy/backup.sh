@@ -24,17 +24,25 @@ fi
 mkdir -p "$BACKUP_DIR"
 STAMP="$(date +%Y-%m-%d_%H%M)"
 FILE="$BACKUP_DIR/budget-$STAMP.sql.gz"
+TMP="$FILE.tmp"
+
+# Недоделанный дамп не должен оставаться на диске ни при какой ошибке.
+trap 'rm -f "$TMP"' EXIT
 
 # --clean --if-exists: дамп можно накатить на непустую базу.
-pg_dump --clean --if-exists --no-owner "$DATABASE_URL" | gzip > "$FILE.tmp"
-mv "$FILE.tmp" "$FILE"
+pg_dump --clean --if-exists --no-owner "$DATABASE_URL" | gzip > "$TMP"
 
-# Пустой дамп — это не бэкап, а иллюзия бэкапа.
-if [[ "$(stat -c %s "$FILE")" -lt 1024 ]]; then
-    echo "дамп подозрительно мал: $FILE" >&2
+# Пустой дамп — это не бэкап, а иллюзия бэкапа. Проверяем до публикации:
+# файл под финальным именем обязан быть годным.
+if [[ "$(stat -c %s "$TMP")" -lt 1024 ]]; then
+    echo "дамп подозрительно мал, публиковать не буду: $TMP" >&2
     exit 1
 fi
 
+mv "$TMP" "$FILE"
+
+# Хвосты от прошлых сбоев подбираем заодно.
+find "$BACKUP_DIR" -name 'budget-*.sql.gz.tmp' -mmin +60 -delete
 find "$BACKUP_DIR" -name 'budget-*.sql.gz' -mtime "+$KEEP_DAYS" -delete
 
 echo "$(date -Is) готов $FILE ($(du -h "$FILE" | cut -f1))"

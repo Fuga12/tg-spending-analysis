@@ -89,7 +89,9 @@ func TestNotifyOnlySilentUsers(t *testing.T) {
 	}
 }
 
-func TestNotifyIgnoresYesterday(t *testing.T) {
+func TestNotifyCountsTodaysActivityNotSpentDate(t *testing.T) {
+	// Человек сегодня вечером записал вчерашнюю трату: ботом он пользовался,
+	// дёргать его незачем.
 	store := testStore(t)
 	ctx := context.Background()
 
@@ -113,8 +115,43 @@ func TestNotifyIgnoresYesterday(t *testing.T) {
 
 	r.Notify(ctx, now)
 
+	if _, ok := sender.sent[userID]; ok {
+		t.Error("тому, кто сегодня уже записывал траты, напоминание не нужно")
+	}
+}
+
+func TestNotifyIgnoresYesterdaysActivity(t *testing.T) {
+	// А вот запись, сделанная вчера, сегодняшнее напоминание не отменяет.
+	store := testStore(t)
+	ctx := context.Background()
+
+	const userID = int64(904)
+	if err := store.UpsertUser(ctx, userID, "Тест"); err != nil {
+		t.Fatalf("пользователь: %v", err)
+	}
+	now := time.Now()
+	id, err := store.InsertTransaction(ctx, storage.Transaction{
+		PayerID: userID, Beneficiary: classify.BenPayer, Kind: classify.KindExpense,
+		Amount: decimal.RequireFromString("600"), Description: "лимонад",
+		RawText: "600 лимонад", SpentAt: now.AddDate(0, 0, -1),
+	})
+	if err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
+	if _, err := store.Pool().Exec(ctx,
+		`update transactions set created_at = now() - interval '1 day' where id = $1`, id); err != nil {
+		t.Fatalf("сдвиг даты записи: %v", err)
+	}
+
+	sender := &spySender{}
+	r := New(&config.Config{
+		AllowedUserIDs: []int64{userID}, TZ: time.UTC, ReminderAt: "21:00",
+	}, store, sender, quietLog())
+
+	r.Notify(ctx, now)
+
 	if sender.sent[userID] != text {
-		t.Error("вчерашняя трата не отменяет сегодняшнее напоминание")
+		t.Error("вчерашняя активность не отменяет сегодняшнее напоминание")
 	}
 }
 

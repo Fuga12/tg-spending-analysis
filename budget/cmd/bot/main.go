@@ -19,7 +19,9 @@ import (
 
 // shutdownTimeout — сколько ждём уже начатые обработчики, прежде чем гасить
 // клиента Telegram и пул БД.
-const shutdownTimeout = 20 * time.Second
+// Худший случай одного обработчика — разбор (2×LLM_TIMEOUT + запас) плюс
+// запись; таймаут должен быть заметно больше, иначе гарантия §8 не держится.
+const shutdownTimeout = 45 * time.Second
 
 // backfillPeriod — как часто воркер добирает непроклассифицированные
 // записи (§12).
@@ -103,7 +105,8 @@ func main() {
 	// Воркер добора: раз в 10 минут подбирает записи, которым не досталось
 	// категории (§12).
 	backfill := worker.New(store, classifier, breaker, budget, log)
-	go backfill.Run(ctx, backfillPeriod)
+	backfillDone := make(chan struct{})
+	go backfill.Run(ctx, backfillPeriod, backfillDone)
 
 	rem := reminder.New(cfg, store, b, log)
 	if err := rem.Start(); err != nil {
@@ -120,5 +123,13 @@ func main() {
 
 	log.Info("запущен", "users", len(cfg.AllowedUserIDs), "model", cfg.LLMModel)
 	b.Start()
+
+	// Пул БД закрывается отложенным store.Close — дождаться воркера надо
+	// раньше, иначе начатый тик допишется в уже закрытый пул.
+	select {
+	case <-backfillDone:
+	case <-time.After(shutdownTimeout):
+		log.Warn("воркер добора не уложился в таймаут остановки")
+	}
 	log.Info("остановлен")
 }

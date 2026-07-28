@@ -179,7 +179,8 @@ func (s *Store) TransactionsBetween(ctx context.Context, from, to time.Time) ([]
 // категорию (§12).
 func (s *Store) PendingClassification(ctx context.Context, limit int) ([]Transaction, error) {
 	rows, err := s.pool.Query(ctx, `
-		select id, payer_id, beneficiary, kind, amount::text, description, raw_text, spent_at
+		select id, payer_id, beneficiary, kind, amount::text, description, raw_text,
+		       spent_at, created_at
 		from transactions
 		where needs_classification and deleted_at is null
 		order by id
@@ -196,7 +197,7 @@ func (s *Store) PendingClassification(ctx context.Context, limit int) ([]Transac
 			amount string
 		)
 		if err := rows.Scan(&t.ID, &t.PayerID, &t.Beneficiary, &t.Kind, &amount,
-			&t.Description, &t.RawText, &t.SpentAt); err != nil {
+			&t.Description, &t.RawText, &t.SpentAt, &t.CreatedAt); err != nil {
 			return nil, err
 		}
 		if t.Amount, err = decimal.NewFromString(amount); err != nil {
@@ -208,15 +209,33 @@ func (s *Store) PendingClassification(ctx context.Context, limit int) ([]Transac
 	return out, rows.Err()
 }
 
-// HasTransactions — писал ли пользователь хоть что-то за период. Нужно
-// напоминанию: молчунов дёргаем, остальных нет (§12).
-func (s *Store) HasTransactions(ctx context.Context, userID int64, from, to time.Time) (bool, error) {
+// ApplyClassification доводит деградированную запись до разобранной одним
+// апдейтом: категория, бенефициар, вид операции и дата траты. Отдельные
+// апдейты оставляли бы запись в полуразобранном виде (§12).
+func (s *Store) ApplyClassification(ctx context.Context, id, payerID int64,
+	categoryID *int32, beneficiary, kind string, spentAt time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		update transactions
+		set category_id = $3, beneficiary = $4, kind = $5, spent_at = $6,
+		    needs_classification = false
+		where id = $1 and payer_id = $2 and deleted_at is null`,
+		id, payerID, categoryID, beneficiary, kind, spentAt)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// HasRecordedOn — писал ли пользователь боту в этот день. Считается по
+// created_at: человек, записавший вечером вчерашние траты, ботом пользовался,
+// и дёргать его напоминанием незачем (§12).
+func (s *Store) HasRecordedOn(ctx context.Context, userID int64, from, to time.Time) (bool, error) {
 	var exists bool
 	err := s.pool.QueryRow(ctx, `
 		select exists (
 			select 1 from transactions
 			where payer_id = $1 and deleted_at is null
-			  and spent_at >= $2 and spent_at < $3
+			  and created_at >= $2 and created_at < $3
 		)`, userID, from, to).Scan(&exists)
 	return exists, err
 }
