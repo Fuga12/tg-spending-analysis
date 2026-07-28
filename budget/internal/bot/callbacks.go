@@ -35,7 +35,7 @@ func (b *Bot) onBeneficiary(beneficiary string) tele.HandlerFunc {
 		if err := b.edit(c, tx); err != nil {
 			return err
 		}
-		return c.Respond()
+		return respond(c, "Теперь "+beneficiaryLabel(beneficiary))
 	}
 }
 

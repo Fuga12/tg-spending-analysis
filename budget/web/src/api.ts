@@ -10,7 +10,7 @@ export class Conflict extends Error {
   }
 }
 
-export type Category = { id: number; name: string; beneficiary: string };
+export type Category = { id: number; name: string; beneficiary: string; hint: string };
 
 export type Me = {
   id: number;
@@ -37,7 +37,7 @@ export type Tx = {
 
 export type TxPage = { items: Tx[]; total: number; has_more: boolean };
 
-export type Line = { id: number; name: string; amount: string; percent: number };
+export type Line = { id: number; name: string; amount: string; percent: number; delta?: string };
 
 export type DayPoint = { day: string; amount: string };
 export type MonthPoint = { year: number; month: number; amount: string };
@@ -103,6 +103,9 @@ export const api = {
   me: () => get<Me>("/api/me"),
 
   categories: () => get<Category[]>("/api/categories"),
+
+  patchCategory: (id: number, body: { name: string; hint: string }) =>
+    send<Category>("PATCH", `/api/categories/${id}`, body),
 
   daily: (year: number, month: number) =>
     get<DayPoint[]>(`/api/report/daily?year=${year}&month=${month}`),

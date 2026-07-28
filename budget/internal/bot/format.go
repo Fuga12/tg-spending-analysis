@@ -47,11 +47,11 @@ func Money(v decimal.Decimal) string {
 func beneficiaryLabel(b string) string {
 	switch b {
 	case classify.BenPayer:
-		return "👤 на себя"
+		return "на себя"
 	case classify.BenPartner:
-		return "🧍 на неё"
+		return "на неё"
 	default:
-		return "👥 на двоих"
+		return "на двоих"
 	}
 }
 
@@ -60,11 +60,11 @@ func beneficiaryLabel(b string) string {
 func beneficiaryIcon(b string) string {
 	switch b {
 	case classify.BenPayer:
-		return "👤"
+		return "себе"
 	case classify.BenPartner:
-		return "🧍"
+		return "ей"
 	default:
-		return "👥"
+		return "на двоих"
 	}
 }
 

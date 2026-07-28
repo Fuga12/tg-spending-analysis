@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, Category, DayPoint, Line, Me, MonthPoint, MonthReport, Tx, Unauthorized } from "./api";
 import Sheet from "./Sheet";
-import { CategoryBars, DayColumns, Sparkline, StackedBar } from "./Charts";
+import { CategoryBars, DayColumns, MonthStrip, StackedBar } from "./Charts";
+import Categories from "./Categories";
 import { beneficiaryLabel, dayLabel, initials, money, monthName, todayFrom } from "./format";
 
 const PAGE = 200;
@@ -12,6 +13,16 @@ const MONTHS_IN = [
 ];
 
 const monthOf = (month: number) => MONTHS_IN[month - 1];
+
+/** Дельты категорий приходят с сервера строками: считать их на клиенте
+ *  значит повторить фильтрацию расходов и разойтись с ботом. */
+function deltasOf(lines: Line[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const l of lines) {
+    if (l.delta !== undefined) out.set(l.name, Number(l.delta));
+  }
+  return out;
+}
 
 /** Цвет закреплён за человеком: смотрящий — первый слот, партнёр — второй,
  *  общие корзины — третий. Не по порядку в базе: иначе у двоих будут разные
@@ -87,6 +98,7 @@ export default function App() {
   const [creating, setCreating] = useState(false);
   const [toast, setToast] = useState<{ text: string; undo?: () => void } | null>(null);
   const [days, setDays] = useState<DayPoint[]>([]);
+  const [editingCats, setEditingCats] = useState(false);
   const [months, setMonths] = useState<MonthPoint[]>([]);
 
   // Номер запроса: ответы по параллельным соединениям приходят не по
@@ -255,7 +267,7 @@ export default function App() {
               ›
             </button>
             <button className="iconbtn" onClick={() => setSearching(true)} aria-label="Поиск">
-              🔍
+              <SearchIcon />
             </button>
           </>
         )}
@@ -269,6 +281,14 @@ export default function App() {
             Повторить
           </button>
         </div>
+      )}
+
+      {!loading && !route.query && months.length > 0 && (
+        <MonthStrip
+          points={[...months, { year: route.year, month: route.month, amount: report?.total ?? "0" }]}
+          active={{ year: route.year, month: route.month }}
+          onPick={(p) => go({ ...route, query: "", year: p.year, month: p.month })}
+        />
       )}
 
       {loading ? (
@@ -294,18 +314,21 @@ export default function App() {
 
           {!route.query && report && Number(report.total) > 0 && (
             <>
-              <Sparkline
-                points={months}
-                onPick={(p) => go({ ...route, query: "", year: p.year, month: p.month })}
-              />
-              <StackedBar title="Кто платил" lines={report.payers} slotOf={(l) => slotOf(l, me)} />
-              <StackedBar title="На кого ушло" lines={report.beneficiaries} slotOf={(l) => slotOf(l, me)} />
-              <CategoryBars
-                lines={report.categories}
-                activeID={route.category}
-                onPick={(id) => go({ ...route, category: route.category === id ? 0 : id }, true)}
-              />
-              <DayColumns days={days} today={today} />
+              <div className="grid">
+                <div className="grid__main">
+                  <CategoryBars
+                    lines={report.categories}
+                    activeID={route.category}
+                    onPick={(id) => go({ ...route, category: route.category === id ? 0 : id }, true)}
+                    deltas={deltasOf(report.categories)}
+                  />
+                  <DayColumns days={days} today={today} />
+                </div>
+                <div className="grid__side">
+                  <StackedBar title="Кто платил" lines={report.payers} slotOf={(l) => slotOf(l, me)} />
+                  <StackedBar title="На кого ушло" lines={report.beneficiaries} slotOf={(l) => slotOf(l, me)} />
+                </div>
+              </div>
             </>
           )}
 
@@ -347,7 +370,7 @@ export default function App() {
             </button>
           )}
 
-          <Footer me={me} />
+          <Footer me={me} onCategories={() => setEditingCats(true)} />
         </div>
       )}
 
@@ -389,6 +412,17 @@ export default function App() {
         />
       )}
 
+      {editingCats && (
+        <Categories
+          categories={categories}
+          onClose={() => setEditingCats(false)}
+          onSaved={(c) => {
+            setCategories((prev) => prev.map((x) => (x.id === c.id ? c : x)));
+            void load();
+          }}
+        />
+      )}
+
       {toast && (
         <div className="toast" role="status">
           <span style={{ flex: 1 }}>{toast.text}</span>
@@ -400,6 +434,15 @@ export default function App() {
         </div>
       )}
     </div>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
+      <circle cx="9" cy="9" r="6" stroke="currentColor" strokeWidth="2" />
+      <path d="M13.5 13.5L17 17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
   );
 }
 
@@ -452,6 +495,9 @@ function Row({ tx, me, onOpen }: { tx: Tx; me: Me | null; onOpen: () => void }) 
 
   return (
     <button className={`row${tx.needs_review ? " row--review" : ""}`} onClick={onOpen}>
+      <span className={`who${isMine ? "" : " who--partner"}`} title={name}>
+        {initials(name, isMine ? me?.partner?.name : me?.name)}
+      </span>
       <div className="row__main">
         <div className="row__title">
           {transfer ? "↔ Перевод" : tx.description || "без описания"}
@@ -468,9 +514,6 @@ function Row({ tx, me, onOpen }: { tx: Tx; me: Me | null; onOpen: () => void }) 
         <span className={`row__amount${transfer ? " row__amount--muted" : ""}`}>
           {money(tx.amount, income)}
         </span>
-        <span className={`who${isMine ? "" : " who--partner"}`} title={name}>
-          {initials(name, isMine ? me?.partner?.name : me?.name)}
-        </span>
       </div>
     </button>
   );
@@ -485,12 +528,15 @@ async function leave(everywhere: boolean) {
   }
 }
 
-function Footer({ me }: { me: Me | null }) {
+function Footer({ me, onCategories }: { me: Me | null; onCategories: () => void }) {
   return (
     <div className="foot">
       <span>{me?.name ?? "…"}</span>
+      <button onClick={onCategories}>Категории</button>
       <button onClick={() => void leave(false)}>Выйти</button>
-      <button onClick={() => void leave(true)}>Выйти отовсюду</button>
+      <button className="foot__danger" onClick={() => void leave(true)}>
+        Выйти отовсюду
+      </button>
     </div>
   );
 }

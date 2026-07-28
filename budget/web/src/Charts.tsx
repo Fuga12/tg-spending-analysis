@@ -10,34 +10,40 @@ import { money } from "./format";
 
 const num = (v: string) => Number(v);
 
-/** Спарклайн по завершённым месяцам. Текущий не входит — он неполный. */
-export function Sparkline({ points, onPick }: { points: MonthPoint[]; onPick: (p: MonthPoint) => void }) {
-  if (points.length < 2) return null;
+/**
+ * Полоса месяцев: она же навигация, она же график тренда. Линия с точкой
+ * решала только вторую задачу и занимала столько же места.
+ */
+export function MonthStrip({
+  points,
+  active,
+  onPick,
+}: {
+  points: MonthPoint[];
+  active: { year: number; month: number };
+  onPick: (p: { year: number; month: number }) => void;
+}) {
+  if (points.length === 0) return null;
 
-  const values = points.map((p) => num(p.amount));
-  const max = Math.max(...values, 1);
-  const w = 100;
-  const h = 28;
-  const step = w / (points.length - 1);
-  const x = (i: number) => i * step;
-  const y = (v: number) => h - 2 - (v / max) * (h - 6);
-
-  const path = values.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
-  const last = points.length - 1;
+  const max = Math.max(...points.map((p) => num(p.amount)), 1);
 
   return (
-    <div className="spark">
-      <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" aria-hidden>
-        <path d={path} className="spark__line" />
-        <circle cx={x(last)} cy={y(values[last])} r="2.4" className="spark__dot" />
-      </svg>
-      <div className="spark__labels">
-        {points.map((p) => (
-          <button key={`${p.year}-${p.month}`} className="spark__label" onClick={() => onPick(p)}>
-            {SHORT[p.month - 1]}
+    <div className="strip">
+      {points.map((p) => {
+        const on = p.year === active.year && p.month === active.month;
+        const value = num(p.amount);
+        return (
+          <button
+            key={`${p.year}-${p.month}`}
+            className={`strip__item${on ? " strip__item--on" : ""}`}
+            onClick={() => onPick(p)}
+            title={money(p.amount)}
+          >
+            <span className="strip__bar" style={{ height: `${Math.max((value / max) * 100, 6)}%` }} />
+            <span className="strip__label">{SHORT[p.month - 1]}</span>
           </button>
-        ))}
-      </div>
+        );
+      })}
     </div>
   );
 }
@@ -97,10 +103,14 @@ export function CategoryBars({
   lines,
   activeID,
   onPick,
+  deltas,
 }: {
   lines: Line[];
   activeID: number;
   onPick: (id: number) => void;
+  /** Насколько категория изменилась к прошлому месяцу. Это единственный
+   *  вопрос, который вообще задают статистике. */
+  deltas?: Map<string, number>;
 }) {
   if (lines.length === 0) return null;
 
@@ -127,7 +137,7 @@ export function CategoryBars({
             <span className="bar__fill" style={{ width: `${(num(l.amount) / max) * 100}%` }} />
           </span>
           <span className="bar__value">{money(l.amount)}</span>
-          <span className="bar__percent">{l.percent}%</span>
+          <span className="bar__delta">{deltaLabel(deltas?.get(l.name))}</span>
         </button>
       ))}
       {rest.length > 0 && (
@@ -143,12 +153,37 @@ export function CategoryBars({
   );
 }
 
+/** Разница с прошлым месяцем: «+840 ₽», «−2 200 ₽» или прочерк. */
+function deltaLabel(delta: number | undefined) {
+  if (delta === undefined || Math.round(delta) === 0) {
+    return <span className="delta delta--flat">0 ₽</span>;
+  }
+  const grew = delta > 0;
+  return (
+    <span className={`delta ${grew ? "delta--up" : "delta--down"}`}>
+      {grew ? "+" : "−"}
+      {money(String(Math.abs(Math.round(delta))))}
+    </span>
+  );
+}
+
 /**
  * Дни столбиками. Тапа нет: 31 столбик в 328px — это 10.6px на шаг, палец
  * накрывает четыре сразу. График обзорный, числа есть в списке ниже (§3.7).
  */
 export function DayColumns({ days, today }: { days: DayPoint[]; today: string }) {
   if (days.length === 0) return null;
+
+  // Один-два столбика — это не график, а недоразумение.
+  const withData = days.filter((d) => num(d.amount) > 0).length;
+  if (withData < 3) {
+    return (
+      <section className="block">
+        <h2 className="block__title">По дням</h2>
+        <p className="block__empty">Данных пока мало — график появится, когда наберётся неделя</p>
+      </section>
+    );
+  }
 
   const max = Math.max(...days.map((d) => num(d.amount)), 1);
   const peak = days.reduce((a, b) => (num(a.amount) >= num(b.amount) ? a : b));

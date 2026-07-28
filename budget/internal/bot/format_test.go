@@ -64,7 +64,7 @@ func TestTransactionLine(t *testing.T) {
 				Amount: decimal.RequireFromString("1200"), CategoryName: "Доставка еды",
 				Beneficiary: classify.BenBoth, Kind: classify.KindExpense, SpentAt: now,
 			},
-			want: "✓ 1 200 ₽ · Доставка еды · 👥 на двоих",
+			want: "✓ 1 200 ₽ · Доставка еды · на двоих",
 		},
 		{
 			name: "вчерашняя трата",
@@ -73,7 +73,7 @@ func TestTransactionLine(t *testing.T) {
 				Beneficiary: classify.BenBoth, Kind: classify.KindExpense,
 				SpentAt: now.AddDate(0, 0, -1),
 			},
-			want: "✓ 1 200 ₽ · Продукты · 👥 · вчера",
+			want: "✓ 1 200 ₽ · Продукты · на двоих · вчера",
 		},
 		{
 			name: "деградированная запись",
@@ -104,13 +104,20 @@ func TestTransactionLine(t *testing.T) {
 }
 
 func TestKeyboards(t *testing.T) {
-	m := transactionKeyboard(42)
+	// Показываются только другие варианты: нажатие на уже выбранный ничего
+	// не меняет, и человек решает, что кнопка не работает.
+	m := transactionKeyboard(42, classify.BenBoth)
 	if len(m.InlineKeyboard) != 2 {
 		t.Fatalf("рядов клавиатуры %d, ожидалось два", len(m.InlineKeyboard))
 	}
-	if len(m.InlineKeyboard[0]) != 3 || len(m.InlineKeyboard[1]) != 2 {
-		t.Errorf("раскладка = %d и %d кнопок, ожидалось 3 и 2",
+	if len(m.InlineKeyboard[0]) != 2 || len(m.InlineKeyboard[1]) != 2 {
+		t.Errorf("раскладка = %d и %d кнопок, ожидалось 2 и 2",
 			len(m.InlineKeyboard[0]), len(m.InlineKeyboard[1]))
+	}
+	for _, btn := range m.InlineKeyboard[0] {
+		if btn.Text == "на двоих" {
+			t.Error("текущий вариант не должен быть кнопкой")
+		}
 	}
 	if m.InlineKeyboard[0][0].Data != "42" {
 		t.Errorf("данные кнопки = %q, ожидался id транзакции", m.InlineKeyboard[0][0].Data)

@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -421,4 +422,75 @@ func pathID(path string) (int64, bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+// categoryPatch — имя и подсказка. Подсказка уходит в JSON-схему запроса и
+// прямо влияет на то, как модель раскладывает траты (plan.md §6).
+type categoryPatch struct {
+	Name string `json:"name"`
+	Hint string `json:"hint"`
+}
+
+// Границы: имя в enum схемы, подсказка в описание поля. Длинные строки
+// раздувают промпт, а он уходит на каждый разбор.
+const (
+	maxCategoryName = 32
+	maxCategoryHint = 120
+)
+
+func (s *Server) handleCategoryPatch(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r.URL.Path)
+	if !ok || id > math.MaxInt32 {
+		writeError(w, http.StatusBadRequest, "не понял, какая это категория")
+		return
+	}
+
+	var body categoryPatch
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "не разобрал запрос")
+		return
+	}
+
+	name := trimTo(strings.TrimSpace(body.Name), maxCategoryName)
+	hint := trimTo(strings.TrimSpace(body.Hint), maxCategoryHint)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "у категории должно быть название")
+		return
+	}
+
+	cats, err := s.store.Categories(r.Context())
+	if err != nil {
+		s.log.Error("категории", "err", err)
+		writeError(w, http.StatusInternalServerError, "база не отвечает")
+		return
+	}
+	// Имена уходят в enum схемы, и одинаковых там быть не может.
+	for _, c := range cats {
+		if c.ID != int32(id) && strings.EqualFold(c.Name, name) {
+			writeError(w, http.StatusBadRequest, "категория с таким названием уже есть")
+			return
+		}
+	}
+
+	updated, err := s.store.UpdateCategory(r.Context(), int32(id), name, hint)
+	if err != nil {
+		s.log.Error("правка категории", "err", err, "id", id)
+		writeError(w, http.StatusInternalServerError, "база не отвечает")
+		return
+	}
+	if !updated {
+		writeError(w, http.StatusNotFound, "нет такой категории")
+		return
+	}
+	s.log.Info("категория изменена", "id", id, "name", name)
+	writeJSON(w, http.StatusOK, categoryView{ID: int32(id), Name: name, Hint: hint})
+}
+
+// trimTo обрезает строку до n символов, не разрывая руны.
+func trimTo(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return strings.TrimSpace(string(r[:n]))
 }

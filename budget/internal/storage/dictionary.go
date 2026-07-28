@@ -9,6 +9,10 @@ type Category struct {
 	Name               string
 	DefaultBeneficiary string
 	SortOrder          int
+
+	// Hint уходит в описание категории внутри JSON-схемы: пояснения заметно
+	// поднимают точность разбора (plan.md §6).
+	Hint string
 }
 
 // WordHit — как слово разрешилось в категорию.
@@ -30,7 +34,7 @@ const (
 // Categories возвращает все категории в порядке отображения.
 func (s *Store) Categories(ctx context.Context) ([]Category, error) {
 	rows, err := s.pool.Query(ctx, `
-		select id, name, default_beneficiary, sort_order
+		select id, name, default_beneficiary, sort_order, hint
 		from categories order by sort_order, id`)
 	if err != nil {
 		return nil, err
@@ -40,7 +44,7 @@ func (s *Store) Categories(ctx context.Context) ([]Category, error) {
 	var out []Category
 	for rows.Next() {
 		var c Category
-		if err := rows.Scan(&c.ID, &c.Name, &c.DefaultBeneficiary, &c.SortOrder); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.DefaultBeneficiary, &c.SortOrder, &c.Hint); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -104,4 +108,15 @@ func (s *Store) UpsertWord(ctx context.Context, userID int64, word string, categ
 		    updated_at  = now()`,
 		word, userID, categoryID, ben, source)
 	return err
+}
+
+// UpdateCategory правит имя и подсказку. Добавлять и удалять категории
+// нельзя: их ровно четырнадцать (plan.md §14), а список уходит в enum схемы.
+func (s *Store) UpdateCategory(ctx context.Context, id int32, name, hint string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		update categories set name = $2, hint = $3 where id = $1`, id, name, hint)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }

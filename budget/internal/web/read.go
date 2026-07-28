@@ -1,7 +1,6 @@
 package web
 
 import (
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -116,6 +115,9 @@ type lineView struct {
 	Name    string `json:"name"`
 	Amount  string `json:"amount"`
 	Percent int    `json:"percent"`
+	// Delta — насколько больше или меньше, чем за сопоставимый отрезок
+	// прошлого месяца. Это единственный вопрос, который задают статистике.
+	Delta string `json:"delta,omitempty"`
 }
 
 // compareView — сопоставимый отрезок прошлого месяца.
@@ -169,11 +171,16 @@ func (s *Server) handleMonth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	m := report.BuildMonth(year, month, rows, users)
+	categories := lines(m.Categories)
+	if cmp, ok := report.ComparableRange(s.now(), year, month, s.cfg.TZ); ok {
+		s.addCategoryDeltas(r, categories, cmp)
+	}
+
 	resp := monthResponse{
 		Year:          year,
 		Month:         int(month),
 		Total:         m.Total.String(),
-		Categories:    lines(m.Categories),
+		Categories:    categories,
 		Payers:        lines(m.Payers),
 		Beneficiaries: lines(m.Beneficiaries),
 		Pending:       pending,
@@ -233,6 +240,51 @@ func (s *Server) compare(r *http.Request, year int, month time.Month, total deci
 	return view, true
 }
 
+// addCategoryDeltas дописывает к каждой категории разницу с сопоставимым
+// отрезком прошлого месяца. Сравниваются равные отрезки: у незакрытого
+// месяца это не весь месяц, а столько же дней, сколько прошло.
+func (s *Server) addCategoryDeltas(r *http.Request, categories []lineView, c report.Comparison) {
+	prevRows, err := s.store.Expenses(r.Context(), c.From, c.To)
+	if err != nil {
+		s.log.Warn("категории прошлого месяца", "err", err)
+		return
+	}
+
+	prev := map[string]decimal.Decimal{}
+	for _, row := range prevRows {
+		name := row.CategoryName
+		if name == "" {
+			name = report.NoCategory
+		}
+		prev[name] = prev[name].Add(row.Amount)
+	}
+
+	current := map[string]decimal.Decimal{}
+	if c.Partial {
+		// У незакрытого месяца берём тот же отрезок, что и в прошлом.
+		curRows, err := s.store.Expenses(r.Context(), c.CurrentFrom, c.CurrentTo)
+		if err != nil {
+			s.log.Warn("сопоставимый отрезок текущего месяца", "err", err)
+			return
+		}
+		for _, row := range curRows {
+			name := row.CategoryName
+			if name == "" {
+				name = report.NoCategory
+			}
+			current[name] = current[name].Add(row.Amount)
+		}
+	}
+
+	for i, line := range categories {
+		amount := decimal.RequireFromString(line.Amount)
+		if c.Partial {
+			amount = current[line.Name]
+		}
+		categories[i].Delta = amount.Sub(prev[line.Name]).String()
+	}
+}
+
 // sum складывает расходы за отрезок.
 func (s *Server) sum(r *http.Request, from, to time.Time) (decimal.Decimal, error) {
 	rows, err := s.store.Expenses(r.Context(), from, to)
@@ -258,6 +310,7 @@ type categoryView struct {
 	ID          int32  `json:"id"`
 	Name        string `json:"name"`
 	Beneficiary string `json:"beneficiary"`
+	Hint        string `json:"hint"`
 }
 
 func (s *Server) handleCategories(w http.ResponseWriter, r *http.Request) {
@@ -269,7 +322,9 @@ func (s *Server) handleCategories(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]categoryView, 0, len(cats))
 	for _, c := range cats {
-		out = append(out, categoryView{ID: c.ID, Name: c.Name, Beneficiary: c.DefaultBeneficiary})
+		out = append(out, categoryView{
+			ID: c.ID, Name: c.Name, Beneficiary: c.DefaultBeneficiary, Hint: c.Hint,
+		})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -306,7 +361,7 @@ func first(v []string) string {
 // categoryParam не даёт большому числу молча обрезаться до чужой категории.
 func categoryParam(raw string) int32 {
 	n := intParam(raw)
-	if n <= 0 || n > math.MaxInt32 {
+	if n <= 0 || n > 2147483647 {
 		return 0
 	}
 	return int32(n)

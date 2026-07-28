@@ -231,8 +231,19 @@ func (y *Yandex) request(text string, cats []storage.Category) map[string]any {
 // изменении (§6).
 func responseFormat(cats []storage.Category) map[string]any {
 	names := make([]string, 0, len(cats))
+	hints := make([]string, 0, len(cats))
 	for _, c := range cats {
 		names = append(names, c.Name)
+		if c.Hint != "" {
+			hints = append(hints, c.Name+" — "+c.Hint)
+		}
+	}
+
+	// Подсказки уходят прямо в описание поля: пояснения внутри схемы заметно
+	// поднимают точность, и экономить на них незачем (plan.md §6).
+	categoryDesc := "Категория траты"
+	if len(hints) > 0 {
+		categoryDesc += ". " + strings.Join(hints, "; ")
 	}
 
 	return map[string]any{
@@ -257,7 +268,7 @@ func responseFormat(cats []storage.Category) map[string]any {
 								},
 								"category": map[string]any{
 									"type":        "string",
-									"description": "Категория траты",
+									"description": categoryDesc,
 									"enum":        names,
 								},
 								"beneficiary": map[string]any{

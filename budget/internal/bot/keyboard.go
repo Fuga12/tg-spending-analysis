@@ -21,19 +21,32 @@ const (
 )
 
 // transactionKeyboard — клавиатура под записанной тратой (§9).
-func transactionKeyboard(txID int64) *tele.ReplyMarkup {
+//
+// Показываются только те варианты, которых сейчас нет: нажатие на уже
+// выбранный ничего не меняет, Telegram отвечает «message is not modified»,
+// и человек видит, что кнопка «не работает».
+func transactionKeyboard(txID int64, beneficiary string) *tele.ReplyMarkup {
 	m := &tele.ReplyMarkup{}
 	id := strconv.FormatInt(txID, 10)
 
+	var choices []tele.Btn
+	for _, b := range []struct {
+		value, label, unique string
+	}{
+		{classify.BenPayer, "себе", cbPayer},
+		{classify.BenPartner, "ей", cbPartner},
+		{classify.BenBoth, "на двоих", cbBoth},
+	} {
+		if b.value != beneficiary {
+			choices = append(choices, m.Data(b.label, b.unique, id))
+		}
+	}
+
 	m.Inline(
+		m.Row(choices...),
 		m.Row(
-			m.Data("👤 мне", cbPayer, id),
-			m.Data("🧍 ей", cbPartner, id),
-			m.Data("👥 нам", cbBoth, id),
-		),
-		m.Row(
-			m.Data("🏷 категория", cbCategory, id),
-			m.Data("🗑 удалить", cbDelete, id),
+			m.Data("категория", cbCategory, id),
+			m.Data("удалить", cbDelete, id),
 		),
 	)
 	return m
@@ -42,7 +55,7 @@ func transactionKeyboard(txID int64) *tele.ReplyMarkup {
 // transferKeyboard — у перевода менять нечего, кроме факта его существования.
 func transferKeyboard(txID int64) *tele.ReplyMarkup {
 	m := &tele.ReplyMarkup{}
-	m.Inline(m.Row(m.Data("🗑 удалить", cbDelete, strconv.FormatInt(txID, 10))))
+	m.Inline(m.Row(m.Data("удалить", cbDelete, strconv.FormatInt(txID, 10))))
 	return m
 }
 
@@ -72,5 +85,5 @@ func keyboardFor(t storage.Transaction) *tele.ReplyMarkup {
 	if t.Kind == classify.KindTransfer {
 		return transferKeyboard(t.ID)
 	}
-	return transactionKeyboard(t.ID)
+	return transactionKeyboard(t.ID, t.Beneficiary)
 }
