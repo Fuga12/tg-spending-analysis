@@ -326,3 +326,80 @@ func intParam(raw string) int64 {
 	}
 	return n
 }
+
+// dayView и monthView — данные графиков. Суммы строками, как и везде.
+type dayView struct {
+	Day    string `json:"day"`
+	Amount string `json:"amount"`
+}
+
+type monthPoint struct {
+	Year   int    `json:"year"`
+	Month  int    `json:"month"`
+	Amount string `json:"amount"`
+}
+
+func (s *Server) handleDaily(w http.ResponseWriter, r *http.Request) {
+	year, month, ok := monthParam(r.URL.Query(), s.cfg.TZ)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "не понял месяц")
+		return
+	}
+
+	from, to := report.MonthRange(year, month, s.cfg.TZ)
+	days, err := s.store.DailyExpenses(r.Context(), from, to, s.cfg.TZ.String())
+	if err != nil {
+		s.log.Error("расходы по дням", "err", err)
+		writeError(w, http.StatusInternalServerError, "база не отвечает")
+		return
+	}
+
+	// Отдаём все дни месяца, включая пустые: иначе столбики поедут.
+	byDay := make(map[string]string, len(days))
+	for _, d := range days {
+		byDay[d.Day] = d.Amount.String()
+	}
+	out := make([]dayView, 0, 31)
+	for d := from; d.Before(to); d = d.AddDate(0, 0, 1) {
+		key := d.Format("2006-01-02")
+		amount, ok := byDay[key]
+		if !ok {
+			amount = "0"
+		}
+		out = append(out, dayView{Day: key, Amount: amount})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// monthsShown — сколько завершённых месяцев в спарклайне. Текущий не входит:
+// третьего числа он выглядел бы обвалом трат (webapp-design.md §3.4).
+const monthsShown = 6
+
+func (s *Server) handleMonths(w http.ResponseWriter, r *http.Request) {
+	now := s.now().In(s.cfg.TZ)
+	currentStart, _ := report.MonthRange(now.Year(), now.Month(), s.cfg.TZ)
+	from := currentStart.AddDate(0, -monthsShown, 0)
+
+	totals, err := s.store.MonthlyExpenses(r.Context(), from, currentStart, s.cfg.TZ.String())
+	if err != nil {
+		s.log.Error("итоги месяцев", "err", err)
+		writeError(w, http.StatusInternalServerError, "база не отвечает")
+		return
+	}
+
+	byKey := make(map[[2]int]string, len(totals))
+	for _, t := range totals {
+		byKey[[2]int{t.Year, t.Month}] = t.Amount.String()
+	}
+
+	out := make([]monthPoint, 0, monthsShown)
+	for i := monthsShown; i >= 1; i-- {
+		m := currentStart.AddDate(0, -i, 0)
+		amount, ok := byKey[[2]int{m.Year(), int(m.Month())}]
+		if !ok {
+			amount = "0"
+		}
+		out = append(out, monthPoint{Year: m.Year(), Month: int(m.Month()), Amount: amount})
+	}
+	writeJSON(w, http.StatusOK, out)
+}

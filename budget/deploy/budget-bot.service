@@ -18,8 +18,8 @@ RestartSec=5
 # SIGKILL посреди разбора означает потерянную трату (plan.md §8).
 TimeoutStopSec=120
 
-# Бот ходит только в Telegram, Yandex AI Studio и локальный Postgres —
-# больше ему ничего не нужно.
+# Бот ходит только в Telegram, Yandex AI Studio и локальный Postgres,
+# а веб слушает локальный порт из WEB_ADDR — больше ему ничего не нужно.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

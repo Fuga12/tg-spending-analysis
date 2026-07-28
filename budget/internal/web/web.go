@@ -69,6 +69,8 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 	api.HandleFunc("GET /api/categories", s.handleCategories)
 	api.HandleFunc("GET /api/transactions", s.handleTransactions)
 	api.HandleFunc("GET /api/report/month", s.handleMonth)
+	api.HandleFunc("GET /api/report/daily", s.handleDaily)
+	api.HandleFunc("GET /api/report/months", s.handleMonths)
 	api.HandleFunc("POST /api/transactions", s.handleCreate)
 	api.HandleFunc("PATCH /api/transactions/{id}", s.handlePatch)
 	api.HandleFunc("DELETE /api/transactions/{id}", s.handleDelete)
@@ -79,6 +81,8 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 	api.HandleFunc("/api/categories", methodNotAllowed)
 	api.HandleFunc("/api/transactions", methodNotAllowed)
 	api.HandleFunc("/api/report/month", methodNotAllowed)
+	api.HandleFunc("/api/report/daily", methodNotAllowed)
+	api.HandleFunc("/api/report/months", methodNotAllowed)
 	api.HandleFunc("/api/transactions/{id}", methodNotAllowed)
 	api.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "нет такого метода")
@@ -91,6 +95,7 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 	for _, path := range []string{
 		"/api/me", "/api/session", "/api/categories",
 		"/api/transactions", "/api/transactions/", "/api/report/month",
+		"/api/report/daily", "/api/report/months",
 	} {
 		mux.Handle(path, s.requireSession(api))
 	}

@@ -133,6 +133,7 @@ type ExpenseRow struct {
 	PayerID      int64
 	Beneficiary  string
 	Amount       decimal.Decimal
+	CategoryID   *int32
 	CategoryName string // пусто — «Без категории»
 }
 
@@ -140,7 +141,7 @@ type ExpenseRow struct {
 // отчёты не попадают ни в каком виде (§3).
 func (s *Store) Expenses(ctx context.Context, from, to time.Time) ([]ExpenseRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		select t.payer_id, t.beneficiary, t.amount::text, coalesce(c.name, '')
+		select t.payer_id, t.beneficiary, t.amount::text, t.category_id, coalesce(c.name, '')
 		from transactions t
 		left join categories c on c.id = t.category_id
 		where t.deleted_at is null
@@ -157,7 +158,7 @@ func (s *Store) Expenses(ctx context.Context, from, to time.Time) ([]ExpenseRow,
 			r      ExpenseRow
 			amount string
 		)
-		if err := rows.Scan(&r.PayerID, &r.Beneficiary, &amount, &r.CategoryName); err != nil {
+		if err := rows.Scan(&r.PayerID, &r.Beneficiary, &amount, &r.CategoryID, &r.CategoryName); err != nil {
 			return nil, err
 		}
 		if r.Amount, err = decimal.NewFromString(amount); err != nil {

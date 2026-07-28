@@ -64,6 +64,7 @@ func BuildMonth(year int, month time.Month, rows []storage.ExpenseRow, users []s
 	m := Month{Year: year, Month: month, Total: decimal.Zero}
 
 	byCategory := map[string]decimal.Decimal{}
+	categoryIDs := map[string]int32{}
 	byPayer := map[int64]decimal.Decimal{}
 	spentOn := map[int64]decimal.Decimal{}
 	common := decimal.Zero
@@ -77,6 +78,9 @@ func BuildMonth(year int, month time.Month, rows []storage.ExpenseRow, users []s
 			name = NoCategory
 		}
 		byCategory[name] = byCategory[name].Add(r.Amount)
+		if r.CategoryID != nil {
+			categoryIDs[name] = *r.CategoryID
+		}
 		byPayer[r.PayerID] = byPayer[r.PayerID].Add(r.Amount)
 
 		switch r.Beneficiary {
@@ -95,7 +99,7 @@ func BuildMonth(year int, month time.Month, rows []storage.ExpenseRow, users []s
 		}
 	}
 
-	m.Categories = sortedLines(namedSums(byCategory), m.Total)
+	m.Categories = sortedLines(namedSums(byCategory, categoryIDs), m.Total)
 	m.Payers = sortedLines(userSums(byPayer, users), decimal.Zero)
 
 	beneficiaries := userSums(spentOn, users)
@@ -124,10 +128,12 @@ func partnerOf(payerID int64, users []storage.User) (int64, bool) {
 	return 0, false
 }
 
-func namedSums(sums map[string]decimal.Decimal) []Line {
+func namedSums(sums map[string]decimal.Decimal, ids map[string]int32) []Line {
 	out := make([]Line, 0, len(sums))
 	for name, amount := range sums {
-		out = append(out, Line{Name: name, Amount: amount})
+		// ID нужен фронту: тап по строке категории фильтрует список, а имя
+		// в адресе ломается при первом же переименовании.
+		out = append(out, Line{ID: int64(ids[name]), Name: name, Amount: amount})
 	}
 	return out
 }

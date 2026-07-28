@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, Category, Me, MonthReport, Tx, Unauthorized } from "./api";
+import { api, Category, DayPoint, Line, Me, MonthPoint, MonthReport, Tx, Unauthorized } from "./api";
 import Sheet from "./Sheet";
+import { CategoryBars, DayColumns, Sparkline, StackedBar } from "./Charts";
 import { beneficiaryLabel, dayLabel, initials, money, monthName, todayFrom } from "./format";
 
 const PAGE = 200;
@@ -11,6 +12,15 @@ const MONTHS_IN = [
 ];
 
 const monthOf = (month: number) => MONTHS_IN[month - 1];
+
+/** Цвет закреплён за человеком: смотрящий — первый слот, партнёр — второй,
+ *  общие корзины — третий. Не по порядку в базе: иначе у двоих будут разные
+ *  цвета у одних и тех же людей (webapp-design.md §3.6). */
+function slotOf(line: Line, me: Me | null): number {
+  if (line.id === 0) return 3;
+  if (me && line.id === me.id) return 1;
+  return 2;
+}
 
 /** Дата новой записи: в открытом прошлом месяце — его первое число, иначе
  *  сегодня. Иначе запись уезжает в текущий месяц и на экране не появляется. */
@@ -27,10 +37,11 @@ function listParams(route: Route) {
     year: route.year,
     month: route.month,
     pending: route.pending ? 1 : undefined,
+    category: route.category || undefined,
   };
 }
 
-type Route = { year: number; month: number; query: string; pending: boolean };
+type Route = { year: number; month: number; query: string; pending: boolean; category: number };
 
 /** Разбор хэша. Полноценный роутер ради трёх состояний — лишняя зависимость. */
 function parseHash(): Route {
@@ -45,6 +56,7 @@ function parseHash(): Route {
     month: match ? Number(match[2]) : now.getMonth() + 1,
     query: params.get("q") ?? "",
     pending: params.get("pending") === "1",
+    category: Number(params.get("cat") ?? 0) || 0,
   };
 }
 
@@ -52,6 +64,7 @@ function hashFor(r: Route): string {
   const params = new URLSearchParams();
   if (r.query) params.set("q", r.query);
   if (r.pending) params.set("pending", "1");
+  if (r.category) params.set("cat", String(r.category));
   const tail = params.toString();
   return `#/m/${r.year}-${String(r.month).padStart(2, "0")}${tail ? "?" + tail : ""}`;
 }
@@ -73,6 +86,8 @@ export default function App() {
   const [editing, setEditing] = useState<Tx | null>(null);
   const [creating, setCreating] = useState(false);
   const [toast, setToast] = useState<{ text: string; undo?: () => void } | null>(null);
+  const [days, setDays] = useState<DayPoint[]>([]);
+  const [months, setMonths] = useState<MonthPoint[]>([]);
 
   // Номер запроса: ответы по параллельным соединениям приходят не по
   // порядку, и без этого три быстрых нажатия «‹» оставляют на экране июнь
@@ -104,6 +119,7 @@ export default function App() {
   useEffect(() => {
     api.me().then(setMe).catch(handleAuthError);
     api.categories().then(setCategories).catch(() => {});
+    api.months().then(setMonths).catch(() => {});
   }, []);
 
   // Тост живёт шесть секунд: столько нужно, чтобы передумать удалять.
@@ -125,14 +141,16 @@ export default function App() {
 
     const id = ++request.current;
     try {
-      const [monthData, page] = await Promise.all([
+      const [monthData, page, dayData] = await Promise.all([
         route.query ? Promise.resolve(null) : api.month(route.year, route.month),
         api.transactions({ ...listParams(route), limit: PAGE }),
+        route.query ? Promise.resolve([]) : api.daily(route.year, route.month),
       ]);
 
       if (id !== request.current) return; // ответ устарел, пришёл другой месяц
 
       if (monthData) setReport(monthData);
+      setDays(dayData);
       setItems(page.items);
       setTotal(page.total);
       setHasMore(page.has_more);
@@ -144,7 +162,7 @@ export default function App() {
         setRefreshing(false);
       }
     }
-  }, [route.year, route.month, route.query, route.pending]); // eslint-disable-line
+  }, [route.year, route.month, route.query, route.pending, route.category]); // eslint-disable-line
 
   useEffect(() => {
     void load();
@@ -272,6 +290,30 @@ export default function App() {
               </span>
               <span>Проверить →</span>
             </button>
+          )}
+
+          {!route.query && report && Number(report.total) > 0 && (
+            <>
+              <Sparkline
+                points={months}
+                onPick={(p) => go({ ...route, query: "", year: p.year, month: p.month })}
+              />
+              <StackedBar title="Кто платил" lines={report.payers} slotOf={(l) => slotOf(l, me)} />
+              <StackedBar title="На кого ушло" lines={report.beneficiaries} slotOf={(l) => slotOf(l, me)} />
+              <CategoryBars
+                lines={report.categories}
+                activeID={route.category}
+                onPick={(id) => go({ ...route, category: route.category === id ? 0 : id }, true)}
+              />
+              <DayColumns days={days} today={today} />
+            </>
+          )}
+
+          {route.category > 0 && (
+            <div className="foot" style={{ paddingTop: 8 }}>
+              {report?.categories.find((c) => c.id === route.category)?.name ?? "Категория"} · {total}
+              <button onClick={() => go({ ...route, category: 0 }, true)}>снять фильтр</button>
+            </div>
           )}
 
           {route.pending && (

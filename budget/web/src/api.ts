@@ -39,6 +39,9 @@ export type TxPage = { items: Tx[]; total: number; has_more: boolean };
 
 export type Line = { id: number; name: string; amount: string; percent: number };
 
+export type DayPoint = { day: string; amount: string };
+export type MonthPoint = { year: number; month: number; amount: string };
+
 export type Compare = {
   days: number;
   previous: string;
@@ -100,6 +103,11 @@ export const api = {
   me: () => get<Me>("/api/me"),
 
   categories: () => get<Category[]>("/api/categories"),
+
+  daily: (year: number, month: number) =>
+    get<DayPoint[]>(`/api/report/daily?year=${year}&month=${month}`),
+
+  months: () => get<MonthPoint[]>("/api/report/months"),
 
   patch: (id: number, body: Record<string, unknown>) =>
     send<Tx>("PATCH", `/api/transactions/${id}`, body),

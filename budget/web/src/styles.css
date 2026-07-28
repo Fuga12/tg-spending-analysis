@@ -718,3 +718,214 @@ button {
   min-height: 44px;
   padding: 0 4px;
 }
+
+/* --- графики ---------------------------------------------------------
+   Правила из webapp-design.md §6: тонкие марки, зазор цветом фона вместо
+   обводок, сплошные волосяные оси, выборочные подписи. */
+
+.block {
+  margin: 24px 0;
+}
+
+.block__title {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.slot-1 {
+  background: var(--slot-1);
+}
+.slot-2 {
+  background: var(--slot-2);
+}
+.slot-3 {
+  background: var(--slot-3);
+}
+
+/* спарклайн */
+
+.spark {
+  margin: 4px 0 20px;
+}
+
+.spark svg {
+  width: 100%;
+  height: 32px;
+  overflow: visible;
+}
+
+.spark__line {
+  fill: none;
+  stroke: var(--ink-muted);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.spark__dot {
+  fill: var(--slot-1);
+  stroke: var(--page);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.spark__labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2px;
+}
+
+.spark__label {
+  flex: 1;
+  min-height: 32px;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+/* полосы участников */
+
+.stack {
+  display: flex;
+  gap: 2px; /* зазор цветом фона, а не обводка */
+  height: 20px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.stack__seg {
+  min-width: 4px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend__item b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.legend__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+/* категории */
+
+.bar {
+  display: grid;
+  grid-template-columns: minmax(84px, 30%) 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 4px;
+  text-align: left;
+  border-radius: 8px;
+}
+
+.bar--on {
+  background: color-mix(in srgb, var(--slot-1) 14%, transparent);
+}
+
+.bar:disabled {
+  cursor: default;
+}
+
+.bar__name {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bar__track {
+  height: 14px;
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.bar__fill {
+  display: block;
+  height: 100%;
+  background: var(--slot-1);
+  border-radius: 0 4px 4px 0; /* скругление на конце данных, у базы прямой */
+}
+
+.bar__fill--muted {
+  background: var(--ink-muted);
+}
+
+.bar__value {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.bar__percent {
+  font-size: 13px;
+  color: var(--ink-muted);
+  min-width: 34px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* дни */
+
+.days {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 72px;
+  padding-bottom: 1px;
+  border-bottom: 1px solid var(--line); /* сплошная волосяная ось */
+}
+
+.days__col {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  height: 100%;
+}
+
+.days__fill {
+  width: 100%;
+  background: var(--slot-1);
+  border-radius: 3px 3px 0 0;
+  opacity: 0.75;
+}
+
+.days__col--today .days__fill {
+  opacity: 1;
+}
+
+.days__axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.days__note {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
