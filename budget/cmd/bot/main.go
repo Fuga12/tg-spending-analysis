@@ -31,6 +31,7 @@ const backfillPeriod = 10 * time.Minute
 func main() {
 	migrateOnly := flag.Bool("migrate", false, "накатить миграции и выйти")
 	migrateDown := flag.Bool("migrate-down", false, "откатить одну миграцию и выйти")
+	webOnly := flag.Bool("web-only", false, "поднять только веб-интерфейс, без бота")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -56,6 +57,13 @@ func main() {
 			log.Error("миграции", "err", err)
 			os.Exit(1)
 		}
+		return
+	}
+
+	// Режим «только веб»: ни Telegram, ни модель не нужны. Нужен, чтобы
+	// править фронт, не имея боевых токенов.
+	if *webOnly {
+		runWebOnly(ctx, log)
 		return
 	}
 
@@ -152,5 +160,36 @@ func main() {
 	case <-time.After(shutdownTimeout):
 		log.Warn("воркер добора не уложился в таймаут остановки")
 	}
+	log.Info("остановлен")
+}
+
+// runWebOnly поднимает интерфейс без бота и держит его до сигнала.
+func runWebOnly(ctx context.Context, log *slog.Logger) {
+	cfg, err := config.LoadWeb()
+	if err != nil {
+		log.Error("конфиг", "err", err)
+		os.Exit(1)
+	}
+
+	store, err := storage.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		log.Error("БД", "err", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+
+	srv, err := web.New(cfg, log)
+	if err != nil {
+		log.Error("веб", "err", err)
+		os.Exit(1)
+	}
+	if err := srv.Start(); err != nil {
+		log.Error("веб", "err", err)
+		os.Exit(1)
+	}
+	log.Info("только веб, бот не запущен")
+
+	<-ctx.Done()
+	srv.Shutdown()
 	log.Info("остановлен")
 }

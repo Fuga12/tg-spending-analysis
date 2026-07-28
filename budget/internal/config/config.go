@@ -157,6 +157,42 @@ func (c *Config) checkWeb() error {
 	return nil
 }
 
+// LoadWeb — конфиг для режима «только веб»: ни токена бота, ни ключа Яндекса
+// он не требует. Нужен, чтобы поднимать интерфейс отдельно от бота, когда
+// правится фронт.
+func LoadWeb() (*Config, error) {
+	loadDotEnv(".env")
+
+	c := &Config{
+		DatabaseURL:        strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		WebAddr:            envDefault("WEB_ADDR", "127.0.0.1:8081"),
+		WebBaseURL:         strings.TrimRight(strings.TrimSpace(os.Getenv("WEB_BASE_URL")), "/"),
+		WebInsecureCookies: envBool("WEB_INSECURE_COOKIES"),
+	}
+	if c.DatabaseURL == "" {
+		return nil, errors.New("не задана переменная окружения DATABASE_URL")
+	}
+	if !c.WebEnabled() {
+		return nil, errors.New("не задана переменная окружения WEB_BASE_URL")
+	}
+	if err := c.checkWeb(); err != nil {
+		return nil, err
+	}
+
+	loc, err := time.LoadLocation(envDefault("TZ", "Europe/Moscow"))
+	if err != nil {
+		return nil, fmt.Errorf("TZ: %w", err)
+	}
+	c.TZ = loc
+
+	if ids := strings.TrimSpace(os.Getenv("ALLOWED_USER_IDS")); ids != "" {
+		if c.AllowedUserIDs, err = parseIDs(ids); err != nil {
+			return nil, fmt.Errorf("ALLOWED_USER_IDS: %w", err)
+		}
+	}
+	return c, nil
+}
+
 // LoadDatabaseURL достаёт только строку подключения: миграциям остальной конфиг
 // не нужен, и требовать ради них токен бота и ключ Яндекса незачем.
 func LoadDatabaseURL() (string, error) {
