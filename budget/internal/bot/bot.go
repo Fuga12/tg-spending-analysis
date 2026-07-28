@@ -9,16 +9,23 @@ import (
 
 	tele "gopkg.in/telebot.v3"
 
+	"budget/internal/classify"
 	"budget/internal/config"
 	"budget/internal/storage"
 )
 
+// Classifier — разбор сообщения в набор трат.
+type Classifier interface {
+	Classify(ctx context.Context, userID int64, text string) (*classify.Result, error)
+}
+
 // Bot — обёртка над telebot: long polling, whitelist, обработчики.
 type Bot struct {
-	tb    *tele.Bot
-	cfg   *config.Config
-	store *storage.Store
-	log   *slog.Logger
+	tb         *tele.Bot
+	cfg        *config.Config
+	store      *storage.Store
+	classifier Classifier
+	log        *slog.Logger
 
 	// inflight считает обработчики в работе: telebot запускает каждый в своей
 	// горутине, и без этого счётчика остановка рвёт их на середине вместе с
@@ -27,7 +34,7 @@ type Bot struct {
 }
 
 // New собирает бота и регистрирует обработчики.
-func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Bot, error) {
+func New(cfg *config.Config, store *storage.Store, classifier Classifier, log *slog.Logger) (*Bot, error) {
 	tb, err := tele.NewBot(tele.Settings{
 		Token:  cfg.BotToken,
 		Poller: &tele.LongPoller{Timeout: 10 * time.Second},
@@ -39,10 +46,17 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Bot, erro
 		return nil, fmt.Errorf("telegram: %w", err)
 	}
 
-	b := &Bot{tb: tb, cfg: cfg, store: store, log: log}
+	b := &Bot{tb: tb, cfg: cfg, store: store, classifier: classifier, log: log}
 	b.tb.Use(b.track, b.whitelist)
 	b.routes()
 	return b, nil
+}
+
+// Send отправляет сообщение вне контекста апдейта — служебные уведомления
+// владельцу (§7) и напоминания (§12).
+func (b *Bot) Send(userID int64, text string) error {
+	_, err := b.tb.Send(tele.ChatID(userID), text)
+	return err
 }
 
 // Start запускает long polling. Блокирует до Shutdown.
@@ -98,4 +112,12 @@ func (b *Bot) ctx() (context.Context, context.CancelFunc) {
 
 func (b *Bot) routes() {
 	b.tb.Handle("/start", b.onStart)
+	b.tb.Handle(tele.OnText, b.onText)
+
+	b.tb.Handle(&tele.Btn{Unique: cbPayer}, b.onBeneficiary(classify.BenPayer))
+	b.tb.Handle(&tele.Btn{Unique: cbPartner}, b.onBeneficiary(classify.BenPartner))
+	b.tb.Handle(&tele.Btn{Unique: cbBoth}, b.onBeneficiary(classify.BenBoth))
+	b.tb.Handle(&tele.Btn{Unique: cbCategory}, b.onCategoryOpen)
+	b.tb.Handle(&tele.Btn{Unique: cbPick}, b.onCategoryPick)
+	b.tb.Handle(&tele.Btn{Unique: cbDelete}, b.onDelete)
 }

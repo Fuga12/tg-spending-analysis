@@ -28,6 +28,14 @@ type Config struct {
 	LLMBreakerCooldown    time.Duration
 }
 
+// OwnerID — первый id из whitelist, ему уходят служебные уведомления (§7).
+func (c *Config) OwnerID() int64 {
+	if len(c.AllowedUserIDs) == 0 {
+		return 0
+	}
+	return c.AllowedUserIDs[0]
+}
+
 // IsAllowed — проверка whitelist. Другой авторизации нет и не нужно (§9).
 func (c *Config) IsAllowed(id int64) bool {
 	for _, allowed := range c.AllowedUserIDs {

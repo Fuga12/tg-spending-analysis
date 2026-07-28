@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"budget/internal/bot"
+	"budget/internal/classify"
 	"budget/internal/config"
 	"budget/internal/storage"
 )
@@ -62,10 +63,30 @@ func main() {
 	}
 	defer store.Close()
 
-	b, err := bot.New(cfg, store, log)
+	// Уведомление о 80% потолка уходит владельцу — первому id из whitelist (§7).
+	// Бот к этому моменту ещё не создан, поэтому ссылка проставляется после.
+	var notifyOwner func(string)
+	llm := classify.NewYandex(classify.YandexConfig{
+		BaseURL:  cfg.LLMBaseURL,
+		APIKey:   cfg.YandexAPIKey,
+		FolderID: cfg.YandexFolderID,
+		Model:    cfg.LLMModel,
+		Timeout:  cfg.LLMTimeout,
+	}, store, log)
+	breaker := classify.NewBreaker(cfg.LLMBreakerCooldown, log)
+	budget := classify.NewBudget(cfg.LLMMonthlyTokenBudget, store,
+		func(text string) { notifyOwner(text) }, log)
+	classifier := classify.NewService(store, llm, breaker, budget, log)
+
+	b, err := bot.New(cfg, store, classifier, log)
 	if err != nil {
 		log.Error("бот", "err", err)
 		os.Exit(1)
+	}
+	notifyOwner = func(text string) {
+		if err := b.Send(cfg.OwnerID(), text); err != nil {
+			log.Error("не отправил уведомление владельцу", "err", err)
+		}
 	}
 
 	go func() {
