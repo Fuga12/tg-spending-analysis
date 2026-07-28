@@ -138,6 +138,33 @@ func TestYandexRequestShape(t *testing.T) {
 	}
 }
 
+func TestSystemPromptListsCategoriesWithHints(t *testing.T) {
+	// Подсказка категории должна доезжать до модели читаемым списком:
+	// «пиво» уходило в Продукты мимо живой категории «Алкоголь», пока
+	// подсказки слипались в одну строку описания поля схемы.
+	var got struct {
+		Messages []struct{ Role, Content string }
+	}
+	y, _, _ := newTestYandex(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = w.Write([]byte(okResponse))
+	})
+
+	cats := append(testCategories(),
+		storage.Category{ID: 9, Name: "Алкоголь", Hint: "пиво, вино и тп", DefaultBeneficiary: BenBoth})
+	if _, err := y.Parse(context.Background(), "пиво 4000", cats); err != nil {
+		t.Fatalf("неожиданная ошибка: %v", err)
+	}
+
+	system := got.Messages[0].Content
+	if !strings.Contains(system, "- Алкоголь — пиво, вино и тп") {
+		t.Errorf("в системном промпте нет категории с подсказкой:\n%s", system)
+	}
+	if !strings.Contains(system, "- Такси\n") {
+		t.Error("категория без подсказки должна попадать в список одним именем")
+	}
+}
+
 func TestYandexParsesItemsAndRecordsUsage(t *testing.T) {
 	y, usage, _ := newTestYandex(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(okResponse))

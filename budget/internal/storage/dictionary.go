@@ -135,3 +135,16 @@ func (s *Store) CreateCategory(ctx context.Context, name, hint, beneficiary stri
 		returning id, sort_order`, name, beneficiary, hint).Scan(&c.ID, &c.SortOrder)
 	return c, err
 }
+
+// ForgetLLMWords выбрасывает из личных словарей слова, привязанные моделью.
+//
+// Список категорий изменился — значит прежние догадки устарели: «пиво»,
+// однажды разобранное в Продукты, иначе резолвилось бы туда вечно, даже
+// после появления категории «Алкоголь». Ручные привязки не трогаем.
+func (s *Store) ForgetLLMWords(ctx context.Context) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `delete from word_map where source = 'llm'`)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}

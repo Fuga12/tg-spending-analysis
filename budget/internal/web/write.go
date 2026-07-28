@@ -486,6 +486,7 @@ func (s *Server) handleCategoryPatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "нет такой категории")
 		return
 	}
+	s.forgetStaleWords(r)
 	s.log.Info("категория изменена", "id", id, "name", name, "по умолчанию", beneficiary)
 	writeJSON(w, http.StatusOK, categoryView{
 		ID: int32(id), Name: name, Hint: hint, Beneficiary: beneficiary,
@@ -546,9 +547,22 @@ func (s *Server) handleCategoryCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "не смог создать")
 		return
 	}
+	s.forgetStaleWords(r)
 	s.log.Info("категория создана", "id", created.ID, "name", name)
 	writeJSON(w, http.StatusCreated, categoryView{
 		ID: created.ID, Name: created.Name, Hint: created.Hint,
 		Beneficiary: created.DefaultBeneficiary,
 	})
+}
+
+// forgetStaleWords сбрасывает догадки модели после правки списка категорий.
+func (s *Server) forgetStaleWords(r *http.Request) {
+	n, err := s.store.ForgetLLMWords(r.Context())
+	if err != nil {
+		s.log.Warn("не сбросил устаревшие слова", "err", err)
+		return
+	}
+	if n > 0 {
+		s.log.Info("словарь сброшен после правки категорий", "слов", n)
+	}
 }

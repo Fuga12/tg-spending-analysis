@@ -224,11 +224,32 @@ func (y *Yandex) request(text string, cats []storage.Category) map[string]any {
 		"max_tokens":  500,
 		"stream":      false,
 		"messages": []map[string]string{
-			{"role": "system", "content": systemPrompt},
+			{"role": "system", "content": systemPrompt + categoryBlock(cats)},
 			{"role": "user", "content": text},
 		},
 		"response_format": responseFormat(cats),
 	}
+}
+
+// categoryBlock перечисляет категории списком в конце системного промпта.
+//
+// Подсказки лежат и в описании поля схемы, но там они слипаются в одну
+// длинную строку и тонут: «пиво» уходило в Продукты при живой категории
+// «Алкоголь — пиво, вино и тп». Списком модель их читает.
+func categoryBlock(cats []storage.Category) string {
+	var b strings.Builder
+	b.WriteString("\n\nКатегории и что к ним относится:\n")
+	for _, c := range cats {
+		b.WriteString("- " + c.Name)
+		if c.Hint != "" {
+			b.WriteString(" — " + c.Hint)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\nЕсли трата подходит под подсказку конкретной категории, выбирай её, " +
+		"даже когда подходит и более общая. «Пиво» при наличии категории про алкоголь — " +
+		"это алкоголь, а не продукты.")
+	return b.String()
 }
 
 // responseFormat — JSON-схема ответа. Список категорий берётся из таблицы

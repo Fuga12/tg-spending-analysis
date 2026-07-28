@@ -179,8 +179,18 @@ func SignificantWords(text string) []string {
 }
 
 // Describe — текст без сумм, годный как описание траты (§8).
+//
+// Предлоги по краям убираются: «пиво на 4000» без этого даёт описание
+// «пиво на», и оно же уезжает в отчёты.
 func Describe(text string) string {
-	return trimTo(strings.Join(strings.Fields(tokens.Strip(text)), " "), 64)
+	words := strings.Fields(tokens.Strip(text))
+	for len(words) > 0 && stopWords[strings.ToLower(words[len(words)-1])] {
+		words = words[:len(words)-1]
+	}
+	for len(words) > 0 && stopWords[strings.ToLower(words[0])] {
+		words = words[1:]
+	}
+	return trimTo(strings.Join(words, " "), 64)
 }
 
 func splitWords(text string) []string {

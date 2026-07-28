@@ -144,6 +144,44 @@ func TestUpsertWordDoesNotOverwriteManual(t *testing.T) {
 	}
 }
 
+func TestForgetLLMWordsKeepsManual(t *testing.T) {
+	// Список категорий изменился — догадки модели устарели: «пиво», однажды
+	// разобранное в Продукты, иначе резолвилось бы туда и после появления
+	// категории «Алкоголь». Ручные привязки при этом трогать нельзя.
+	s := testStore(t)
+	ctx := context.Background()
+
+	if err := s.UpsertUser(ctx, 1, "Илья"); err != nil {
+		t.Fatalf("пользователь: %v", err)
+	}
+	cats, _ := s.Categories(ctx)
+	food := categoryID(t, cats, "Продукты")
+	taxi := categoryID(t, cats, "Такси")
+
+	if err := s.UpsertWord(ctx, 1, "пиво", food, "both", SourceLLM); err != nil {
+		t.Fatalf("привязка моделью: %v", err)
+	}
+	if err := s.UpsertWord(ctx, 1, "самокат", taxi, "payer", SourceManual); err != nil {
+		t.Fatalf("ручная привязка: %v", err)
+	}
+
+	n, err := s.ForgetLLMWords(ctx)
+	if err != nil {
+		t.Fatalf("сброс словаря: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("удалено слов: %d, ожидалось 1", n)
+	}
+
+	hits, _ := s.LookupWords(ctx, 1, []string{"пиво", "самокат"})
+	if _, ok := hits["пиво"]; ok {
+		t.Error("догадка модели должна была уйти из личного словаря")
+	}
+	if hits["самокат"].Source != SourceManual {
+		t.Errorf("ручная привязка = %+v, её сброс не касается", hits["самокат"])
+	}
+}
+
 func TestMonthlyUsageIgnoresPreviousMonth(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

@@ -254,3 +254,19 @@ func TestCacheDoesNotRelabelForeignWords(t *testing.T) {
 		t.Errorf("в кэш уедут слова %v, ожидалось только «самокат»", res.Items[0].Words)
 	}
 }
+
+func TestDescribeDropsTrailingStopWord(t *testing.T) {
+	// «пиво на 4000» без обрезки давало описание «пиво на» — с ним трата
+	// и уезжала в отчёты.
+	cases := map[string]string{
+		"пиво на 4000":     "пиво",
+		"за такси 500":     "такси",
+		"на продукты 1200": "продукты",
+		"кофе 300":         "кофе",
+	}
+	for in, want := range cases {
+		if got := Describe(in); got != want {
+			t.Errorf("Describe(%q) = %q, ожидалось %q", in, got, want)
+		}
+	}
+}
