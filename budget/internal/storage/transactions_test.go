@@ -202,3 +202,83 @@ func mustUser(t *testing.T, s *Store, id int64) {
 		t.Fatalf("пользователь: %v", err)
 	}
 }
+
+func TestExpensesFiltersPeriodKindAndDeleted(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	mustUser(t, s, 1)
+
+	now := time.Now()
+	insert := func(kind string, amount string, spentAt time.Time, deleted bool) int64 {
+		t.Helper()
+		id, err := s.InsertTransaction(ctx, Transaction{
+			PayerID: 1, Beneficiary: "both", Kind: kind,
+			Amount: decimal.RequireFromString(amount), Description: "тест",
+			RawText: "тест", SpentAt: spentAt,
+		})
+		if err != nil {
+			t.Fatalf("вставка: %v", err)
+		}
+		if deleted {
+			if _, err := s.DeleteTransaction(ctx, id, 1); err != nil {
+				t.Fatalf("удаление: %v", err)
+			}
+		}
+		return id
+	}
+
+	insert("expense", "1000", now, false)
+	insert("expense", "2000", now, true)                    // удалённая
+	insert("transfer", "5000", now, false)                  // перевод — не расход
+	insert("income", "90000", now, false)                   // доход — не расход
+	insert("expense", "700", now.AddDate(0, 0, -40), false) // другой месяц
+
+	from := now.AddDate(0, 0, -7)
+	to := now.AddDate(0, 0, 1)
+	rows, err := s.Expenses(ctx, from, to)
+	if err != nil {
+		t.Fatalf("расходы: %v", err)
+	}
+	if len(rows) != 1 || !rows[0].Amount.Equal(decimal.RequireFromString("1000")) {
+		t.Fatalf("строк %d (%+v), ожидалась одна на 1000 — переводы, доходы, удалённые и чужие месяцы не в счёт", len(rows), rows)
+	}
+}
+
+func TestPendingClassification(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	mustUser(t, s, 1)
+
+	cats, _ := s.Categories(ctx)
+	food := categoryID(t, cats, "Продукты")
+
+	id, _ := s.InsertTransaction(ctx, Transaction{
+		PayerID: 1, Beneficiary: "payer", Kind: "expense",
+		Amount: decimal.RequireFromString("600"), Description: "лимонад",
+		RawText: "600 лимонад", NeedsClassification: true, SpentAt: time.Now(),
+	})
+	_, _ = s.InsertTransaction(ctx, Transaction{
+		PayerID: 1, Beneficiary: "payer", Kind: "expense",
+		Amount: decimal.RequireFromString("450"), Description: "такси",
+		RawText: "такси 450", CategoryID: &food, SpentAt: time.Now(),
+	})
+
+	pending, err := s.PendingClassification(ctx, 20)
+	if err != nil {
+		t.Fatalf("выборка: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != id {
+		t.Fatalf("добирать нужно только помеченные записи, получено %+v", pending)
+	}
+	if pending[0].RawText != "600 лимонад" {
+		t.Errorf("raw_text = %q — воркеру нужен исходный текст", pending[0].RawText)
+	}
+
+	// После простановки категории запись из очереди уходит.
+	if ok, err := s.SetCategory(ctx, id, 1, food); err != nil || !ok {
+		t.Fatalf("простановка категории: ok=%v err=%v", ok, err)
+	}
+	if pending, _ = s.PendingClassification(ctx, 20); len(pending) != 0 {
+		t.Errorf("в очереди осталось %d записей, ожидалось 0", len(pending))
+	}
+}

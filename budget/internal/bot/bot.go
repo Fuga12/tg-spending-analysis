@@ -14,9 +14,13 @@ import (
 	"budget/internal/storage"
 )
 
-// Classifier — разбор сообщения в набор трат.
-type Classifier interface {
-	Classify(ctx context.Context, userID int64, text string) (*classify.Result, error)
+// Deps — всё, чем бот пользуется снаружи. Отдельной структурой, чтобы
+// команда /лимит могла спросить состояние предохранителей (§7).
+type Deps struct {
+	Store      *storage.Store
+	Classifier *classify.Service
+	Breaker    *classify.Breaker
+	Budget     *classify.Budget
 }
 
 // Bot — обёртка над telebot: long polling, whitelist, обработчики.
@@ -24,7 +28,9 @@ type Bot struct {
 	tb         *tele.Bot
 	cfg        *config.Config
 	store      *storage.Store
-	classifier Classifier
+	classifier *classify.Service
+	breaker    *classify.Breaker
+	budget     *classify.Budget
 	log        *slog.Logger
 
 	// inflight считает обработчики в работе: telebot запускает каждый в своей
@@ -34,7 +40,7 @@ type Bot struct {
 }
 
 // New собирает бота и регистрирует обработчики.
-func New(cfg *config.Config, store *storage.Store, classifier Classifier, log *slog.Logger) (*Bot, error) {
+func New(cfg *config.Config, d Deps, log *slog.Logger) (*Bot, error) {
 	tb, err := tele.NewBot(tele.Settings{
 		Token:  cfg.BotToken,
 		Poller: &tele.LongPoller{Timeout: 10 * time.Second},
@@ -46,7 +52,15 @@ func New(cfg *config.Config, store *storage.Store, classifier Classifier, log *s
 		return nil, fmt.Errorf("telegram: %w", err)
 	}
 
-	b := &Bot{tb: tb, cfg: cfg, store: store, classifier: classifier, log: log}
+	b := &Bot{
+		tb:         tb,
+		cfg:        cfg,
+		store:      d.Store,
+		classifier: d.Classifier,
+		breaker:    d.Breaker,
+		budget:     d.Budget,
+		log:        log,
+	}
 	b.tb.Use(b.track, b.whitelist)
 	b.routes()
 	return b, nil
@@ -119,6 +133,22 @@ func (b *Bot) classifyCtx() (context.Context, context.CancelFunc) {
 
 func (b *Bot) routes() {
 	b.tb.Handle("/start", b.onStart)
+
+	// Команды продублированы латиницей (§9).
+	for _, r := range []struct {
+		ru, en  string
+		handler tele.HandlerFunc
+	}{
+		{"/месяц", "/month", b.onMonth},
+		{"/день", "/day", b.onDay},
+		{"/лимит", "/usage", b.onUsage},
+		{"/категории", "/categories", b.onCategories},
+		{"/помощь", "/help", b.onHelp},
+	} {
+		b.tb.Handle(r.ru, r.handler)
+		b.tb.Handle(r.en, r.handler)
+	}
+
 	b.tb.Handle(tele.OnText, b.onText)
 
 	b.tb.Handle(&tele.Btn{Unique: cbPayer}, b.onBeneficiary(classify.BenPayer))

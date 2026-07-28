@@ -49,3 +49,31 @@ func (s *Store) RecordUsage(ctx context.Context, model string, promptTokens, com
 		model, promptTokens, completionTokens, ok, kind)
 	return err
 }
+
+// UsageErrors — разбивка неуспешных вызовов по виду ошибки за текущий месяц,
+// для команды /лимит (§7).
+func (s *Store) UsageErrors(ctx context.Context) (map[string]int, error) {
+	rows, err := s.pool.Query(ctx, `
+		select coalesce(error_kind, 'other'), count(*)
+		from llm_usage
+		where not ok and created_at >= date_trunc('month', now())
+		group by 1
+		order by 2 desc`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string]int{}
+	for rows.Next() {
+		var (
+			kind  string
+			count int
+		)
+		if err := rows.Scan(&kind, &count); err != nil {
+			return nil, err
+		}
+		out[kind] = count
+	}
+	return out, rows.Err()
+}

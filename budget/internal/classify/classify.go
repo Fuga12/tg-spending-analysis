@@ -10,6 +10,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 
 	"github.com/shopspring/decimal"
 
@@ -101,6 +102,10 @@ type Service struct {
 	breaker Breakable
 	budget  Budgetable
 	log     *slog.Logger
+
+	cacheHits atomic.Int64
+	llmCalls  atomic.Int64
+	degraded  atomic.Int64
 }
 
 func NewService(dict Dict, llm LLM, breaker Breakable, budget Budgetable, log *slog.Logger) *Service {
@@ -130,6 +135,7 @@ func (s *Service) Classify(ctx context.Context, userID int64, text string) (*Res
 	if res, ok, err := s.resolveFromCache(ctx, userID, text, amounts, cats); err != nil {
 		s.log.Warn("кэш-резолвер сломался, иду в модель", "err", err)
 	} else if ok {
+		s.cacheHits.Add(1)
 		s.log.Info("разбор без сети", "fast_path", true, "user_id", userID)
 		return res, nil
 	}
@@ -156,6 +162,7 @@ func (s *Service) Classify(ctx context.Context, userID int64, text string) (*Res
 		s.log.Warn("после валидации не осталось элементов", "fast_path", false, "user_id", userID)
 		return s.degrade(text, amounts, "после валидации пусто"), nil
 	}
+	s.llmCalls.Add(1)
 	s.log.Info("разбор моделью", "fast_path", false, "user_id", userID, "items", len(items))
 	return &Result{Items: items, Source: SourceLLM}, nil
 }
@@ -168,6 +175,7 @@ func (s *Service) degrade(text string, amounts []decimal.Decimal, reason string)
 		description = trimTo(strings.TrimSpace(text), 64)
 	}
 
+	s.degraded.Add(1)
 	s.log.Warn("деградированная запись", "причина", reason, "сумма", amounts[0].String())
 	return &Result{
 		Source: SourceDegraded,
@@ -212,4 +220,24 @@ func categoryByID(cats []storage.Category, id int32) *storage.Category {
 		}
 	}
 	return nil
+}
+
+// Stats — сколько сообщений каким путём разобрано с момента запуска. Нужны
+// команде /лимит: доля быстрого пути — это метрика скорости (§5, §7).
+type Stats struct {
+	Cache    int64
+	LLM      int64
+	Degraded int64
+}
+
+// Total — всего разобранных сообщений.
+func (s Stats) Total() int64 { return s.Cache + s.LLM + s.Degraded }
+
+// Stats отдаёт накопленные счётчики.
+func (s *Service) Stats() Stats {
+	return Stats{
+		Cache:    s.cacheHits.Load(),
+		LLM:      s.llmCalls.Load(),
+		Degraded: s.degraded.Load(),
+	}
 }

@@ -78,7 +78,12 @@ func main() {
 		func(text string) { notifyOwner(text) }, log)
 	classifier := classify.NewService(store, llm, breaker, budget, log)
 
-	b, err := bot.New(cfg, store, classifier, log)
+	b, err := bot.New(cfg, bot.Deps{
+		Store:      store,
+		Classifier: classifier,
+		Breaker:    breaker,
+		Budget:     budget,
+	}, log)
 	if err != nil {
 		log.Error("бот", "err", err)
 		os.Exit(1)
