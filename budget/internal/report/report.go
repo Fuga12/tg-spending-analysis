@@ -21,6 +21,10 @@ const NoCategory = "Без категории"
 // строкой, а не делится пополам между людьми.
 const CommonBucket = "Общее"
 
+// PartnerBucket — трата «на партнёра», когда второй участник боту ещё не
+// известен. Врать про «общее» здесь нельзя: это разные деньги.
+const PartnerBucket = "Партнёру"
+
 // Line — строка блока отчёта.
 type Line struct {
 	Name    string
@@ -59,6 +63,7 @@ func BuildMonth(year int, month time.Month, rows []storage.ExpenseRow, users []s
 	byPayer := map[int64]decimal.Decimal{}
 	spentOn := map[int64]decimal.Decimal{}
 	common := decimal.Zero
+	unknownPartner := decimal.Zero
 
 	for _, r := range rows {
 		m.Total = m.Total.Add(r.Amount)
@@ -77,9 +82,9 @@ func BuildMonth(year int, month time.Month, rows []storage.ExpenseRow, users []s
 			if partner, ok := partnerOf(r.PayerID, users); ok {
 				spentOn[partner] = spentOn[partner].Add(r.Amount)
 			} else {
-				// Партнёр неизвестен — деньги всё равно не должны пропасть
-				// из отчёта, кладём их в общее.
-				common = common.Add(r.Amount)
+				// Второго участника бот ещё не видел: деньги из отчёта
+				// пропасть не должны, но и общими они не стали.
+				unknownPartner = unknownPartner.Add(r.Amount)
 			}
 		default:
 			common = common.Add(r.Amount)
@@ -87,13 +92,16 @@ func BuildMonth(year int, month time.Month, rows []storage.ExpenseRow, users []s
 	}
 
 	m.Categories = sortedLines(namedSums(byCategory), m.Total)
-	m.Payers = sortedLines(userSums(byPayer, users), m.Total)
+	m.Payers = sortedLines(userSums(byPayer, users), decimal.Zero)
 
 	beneficiaries := userSums(spentOn, users)
 	if common.IsPositive() {
 		beneficiaries = append(beneficiaries, Line{Name: CommonBucket, Amount: common})
 	}
-	m.Beneficiaries = sortedLines(beneficiaries, m.Total)
+	if unknownPartner.IsPositive() {
+		beneficiaries = append(beneficiaries, Line{Name: PartnerBucket, Amount: unknownPartner})
+	}
+	m.Beneficiaries = sortedLines(beneficiaries, decimal.Zero)
 	return m
 }
 
@@ -138,6 +146,7 @@ func userSums(sums map[int64]decimal.Decimal, users []storage.User) []Line {
 }
 
 // sortedLines сортирует по убыванию суммы и считает доли от общего итога.
+// Нулевой итог означает, что проценты в этом блоке не показываются (§10).
 func sortedLines(lines []Line, total decimal.Decimal) []Line {
 	sort.SliceStable(lines, func(i, j int) bool {
 		if c := lines[i].Amount.Cmp(lines[j].Amount); c != 0 {

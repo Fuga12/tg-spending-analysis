@@ -135,3 +135,24 @@ func TestKeyboards(t *testing.T) {
 		t.Errorf("данные кнопки категории = %q, ожидалось «42:2»", ck.InlineKeyboard[0][1].Data)
 	}
 }
+
+func TestCommandParsing(t *testing.T) {
+	// telebot не считает «/месяц 6» командой: кириллица не подходит под его
+	// регулярку. Разбираем сами — иначе это сообщение записалось бы тратой
+	// на 6 ₽ и сожгло токены на разбор.
+	cases := []struct{ in, name, payload string }{
+		{"/месяц 6", "/месяц", "6"},
+		{"/месяц", "/месяц", ""},
+		{"/МЕСЯЦ 6", "/месяц", "6"},
+		{"/месяц@budget_bot 6", "/месяц", "6"},
+		{"/month 6", "/month", "6"},
+		{"/день", "/день", ""},
+	}
+	for _, c := range cases {
+		name, payload := parseCommand(c.in)
+		if name != c.name || payload != c.payload {
+			t.Errorf("%q → команда %q, аргумент %q; ожидались %q и %q",
+				c.in, name, payload, c.name, c.payload)
+		}
+	}
+}

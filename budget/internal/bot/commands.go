@@ -58,7 +58,7 @@ func (b *Bot) onMonth(c tele.Context) error {
 		return c.Send("База не отвечает, попробуй ещё раз.")
 	}
 
-	return c.Send(formatMonth(report.BuildMonth(year, month, rows, users)))
+	return sendFixedWidth(c, formatMonth(report.BuildMonth(year, month, rows, users)))
 }
 
 // onDay — траты за сегодня, списком (§9).
@@ -81,7 +81,7 @@ func (b *Bot) onDay(c tele.Context) error {
 	if err != nil {
 		b.log.Warn("список пользователей", "err", err)
 	}
-	return c.Send(formatDay(txs, users, now, b.cfg.TZ))
+	return sendFixedWidth(c, formatDay(txs, users, now, b.cfg.TZ))
 }
 
 // onUsage — расход токенов и состояние предохранителей (§7).

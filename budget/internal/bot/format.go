@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+	tele "gopkg.in/telebot.v3"
 
 	"budget/internal/classify"
 	"budget/internal/report"
@@ -219,13 +220,17 @@ func formatUsage(v usageView) string {
 		}
 	}
 
+	// Счётчики живут в памяти и обнуляются рестартом — об этом сказано прямо,
+	// чтобы их не путали с месячными цифрами выше.
 	total := v.Stats.Total()
+	share := 0
 	if total > 0 {
-		fmt.Fprintf(&sb, "\nБез обращения к API: %d%% сообщений (%d из %d с момента запуска)\n",
-			int(float64(v.Stats.Cache)/float64(total)*100), v.Stats.Cache, total)
-		if v.Stats.Degraded > 0 {
-			fmt.Fprintf(&sb, "Записано без категории: %d\n", v.Stats.Degraded)
-		}
+		share = int(float64(v.Stats.Cache) / float64(total) * 100)
+	}
+	fmt.Fprintf(&sb, "\nБыстрым путём, из словаря: %d%% сообщений (%d из %d с момента запуска)\n",
+		share, v.Stats.Cache, total)
+	if v.Stats.Degraded > 0 {
+		fmt.Fprintf(&sb, "Записано без категории: %d\n", v.Stats.Degraded)
 	}
 
 	if v.BreakerOpen {
@@ -249,4 +254,13 @@ func padLeft(s string, width int) string {
 		return strings.Repeat(" ", n) + s
 	}
 	return s
+}
+
+// sendFixedWidth отправляет отчёт моноширинным блоком: колонки, выровненные
+// пробелами, в пропорциональном шрифте Telegram расползаются.
+func sendFixedWidth(c tele.Context, text string) error {
+	// Обратные кавычки внутри сломали бы разметку — в отчёте им взяться
+	// неоткуда, но имя пользователя приходит из Telegram.
+	text = strings.ReplaceAll(text, "`", "'")
+	return c.Send("```\n"+text+"\n```", tele.ModeMarkdown)
 }

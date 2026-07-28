@@ -33,6 +33,9 @@ type Bot struct {
 	budget     *classify.Budget
 	log        *slog.Logger
 
+	// commands — свой указатель команд, см. routes.
+	commands map[string]tele.HandlerFunc
+
 	// inflight считает обработчики в работе: telebot запускает каждый в своей
 	// горутине, и без этого счётчика остановка рвёт их на середине вместе с
 	// пулом БД. Терять записи нельзя (§8).
@@ -132,21 +135,29 @@ func (b *Bot) classifyCtx() (context.Context, context.CancelFunc) {
 }
 
 func (b *Bot) routes() {
-	b.tb.Handle("/start", b.onStart)
-
 	// Команды продублированы латиницей (§9).
-	for _, r := range []struct {
-		ru, en  string
+	commands := []struct {
+		names   []string
 		handler tele.HandlerFunc
 	}{
-		{"/месяц", "/month", b.onMonth},
-		{"/день", "/day", b.onDay},
-		{"/лимит", "/usage", b.onUsage},
-		{"/категории", "/categories", b.onCategories},
-		{"/помощь", "/help", b.onHelp},
-	} {
-		b.tb.Handle(r.ru, r.handler)
-		b.tb.Handle(r.en, r.handler)
+		{[]string{"/start"}, b.onStart},
+		{[]string{"/месяц", "/month"}, b.onMonth},
+		{[]string{"/день", "/day"}, b.onDay},
+		{[]string{"/лимит", "/usage"}, b.onUsage},
+		{[]string{"/категории", "/categories"}, b.onCategories},
+		{[]string{"/помощь", "/help"}, b.onHelp},
+	}
+
+	// telebot разбирает команды регуляркой с \w, под которую кириллица не
+	// подходит: «/месяц 6» до обработчика не доезжает и попадает в OnText,
+	// где записалось бы тратой на 6 ₽. Поэтому держим свой указатель команд
+	// и разбираем такие сообщения сами — см. dispatchCommand.
+	b.commands = make(map[string]tele.HandlerFunc, 2*len(commands))
+	for _, cmd := range commands {
+		for _, name := range cmd.names {
+			b.tb.Handle(name, cmd.handler)
+			b.commands[name] = cmd.handler
+		}
 	}
 
 	b.tb.Handle(tele.OnText, b.onText)

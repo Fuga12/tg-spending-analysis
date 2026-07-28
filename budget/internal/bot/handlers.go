@@ -39,6 +39,11 @@ func (b *Bot) onText(c tele.Context) error {
 	sender := c.Sender()
 	text := strings.TrimSpace(c.Text())
 
+	// Сообщение, начинающееся со слэша, — команда, а не трата.
+	if strings.HasPrefix(text, "/") {
+		return b.dispatchCommand(c, text)
+	}
+
 	userCtx, cancelUser := b.ctx()
 	err := b.store.UpsertUser(userCtx, sender.ID, displayName(sender))
 	cancelUser()
@@ -86,6 +91,30 @@ func (b *Bot) onText(c tele.Context) error {
 		}
 	}
 	return nil
+}
+
+// dispatchCommand разбирает команду сам: до обработчиков telebot доезжают
+// только команды без аргументов и только латиницей (см. routes).
+func (b *Bot) dispatchCommand(c tele.Context, text string) error {
+	name, payload := parseCommand(text)
+
+	handler, ok := b.commands[name]
+	if !ok {
+		return c.Send("Не знаю такой команды. Что умею — в /помощь")
+	}
+	if msg := c.Message(); msg != nil {
+		msg.Payload = payload
+	}
+	return handler(c)
+}
+
+// parseCommand делит «/месяц@budget_bot 6» на имя команды и аргумент.
+func parseCommand(text string) (name, payload string) {
+	name, payload, _ = strings.Cut(strings.TrimSpace(text), " ")
+	// «@budget_bot» — обращение к боту по имени, в группах Telegram его
+	// добавляет сам.
+	name, _, _ = strings.Cut(name, "@")
+	return strings.ToLower(name), strings.TrimSpace(payload)
 }
 
 // save записывает трату и запоминает слова описания в личном кэше (§8).
