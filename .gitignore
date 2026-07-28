@@ -1,0 +1,4 @@
+.env
+/budget/bot
+/budget/classify-test
+*.dump
