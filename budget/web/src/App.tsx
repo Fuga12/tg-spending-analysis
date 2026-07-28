@@ -4,6 +4,23 @@ import { beneficiaryLabel, dayLabel, initials, money, monthName, todayFrom } fro
 
 const PAGE = 200;
 
+const MONTHS_IN = [
+  "январе", "феврале", "марте", "апреле", "мае", "июне",
+  "июле", "августе", "сентябре", "октябре", "ноябре", "декабре",
+];
+
+const monthOf = (month: number) => MONTHS_IN[month - 1];
+
+/** Одни и те же фильтры для первой страницы и для догрузки. */
+function listParams(route: Route) {
+  if (route.query) return { q: route.query };
+  return {
+    year: route.year,
+    month: route.month,
+    pending: route.pending ? 1 : undefined,
+  };
+}
+
 type Route = { year: number; month: number; query: string; pending: boolean };
 
 /** Разбор хэша. Полноценный роутер ради трёх состояний — лишняя зависимость. */
@@ -44,7 +61,11 @@ export default function App() {
   const [searching, setSearching] = useState(false);
   const [stuck, setStuck] = useState(false);
 
-  const searchInput = useRef<HTMLInputElement>(null);
+  // Номер запроса: ответы по параллельным соединениям приходят не по
+  // порядку, и без этого три быстрых нажатия «‹» оставляют на экране июнь
+  // под заголовком «Июль».
+  const request = useRef(0);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => {
     const onHash = () => setRoute(parseHash());
@@ -81,30 +102,26 @@ export default function App() {
     if (report) setRefreshing(true);
     setError(null);
 
+    const id = ++request.current;
     try {
-      const listParams = route.query
-        ? { q: route.query, limit: PAGE }
-        : {
-            year: route.year,
-            month: route.month,
-            limit: PAGE,
-            pending: route.pending ? 1 : undefined,
-          };
-
       const [monthData, page] = await Promise.all([
         route.query ? Promise.resolve(null) : api.month(route.year, route.month),
-        api.transactions(listParams),
+        api.transactions({ ...listParams(route), limit: PAGE }),
       ]);
+
+      if (id !== request.current) return; // ответ устарел, пришёл другой месяц
 
       if (monthData) setReport(monthData);
       setItems(page.items);
       setTotal(page.total);
       setHasMore(page.has_more);
     } catch (err) {
-      handleAuthError(err);
+      if (id === request.current) handleAuthError(err);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (id === request.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [route.year, route.month, route.query, route.pending]); // eslint-disable-line
 
@@ -113,19 +130,26 @@ export default function App() {
   }, [load]);
 
   async function loadMore() {
+    if (loadingMore) return; // второй тап по «Показать ещё» приклеил бы ту же страницу
+    setLoadingMore(true);
     try {
       const page = await api.transactions({
-        year: route.query ? undefined : route.year,
-        month: route.query ? undefined : route.month,
-        q: route.query || undefined,
-        pending: route.pending ? 1 : undefined,
+        ...listParams(route),
         limit: PAGE,
         offset: items.length,
       });
-      setItems((prev) => [...prev, ...page.items]);
+      // Пока листали, бот мог записать новую трату: страницы сдвигаются,
+      // и по offset приезжают уже показанные записи.
+      setItems((prev) => {
+        const seen = new Set(prev.map((tx) => tx.id));
+        return [...prev, ...page.items.filter((tx) => !seen.has(tx.id))];
+      });
       setHasMore(page.has_more);
+      setTotal(page.total);
     } catch (err) {
       handleAuthError(err);
+    } finally {
+      setLoadingMore(false);
     }
   }
 
@@ -147,12 +171,18 @@ export default function App() {
       <header className={`head${stuck ? " head--stuck" : ""}`}>
         {searching ? (
           <>
-            <button className="iconbtn" onClick={() => { setSearching(false); go({ ...route, query: "" }); }}>
+            <button
+              className="iconbtn"
+              aria-label="Закрыть поиск"
+              onClick={() => {
+                setSearching(false);
+                go({ ...route, query: "" });
+              }}
+            >
               ✕
             </button>
             <div className="search" style={{ flex: 1, paddingBottom: 0 }}>
               <input
-                ref={searchInput}
                 autoFocus
                 placeholder="Описание или сумма"
                 defaultValue={route.query}
@@ -193,10 +223,12 @@ export default function App() {
       </header>
 
       {error && (
-        <div className="notice" role="alert">
-          <span>⚠</span>
+        <div className="notice notice--error" role="alert">
+          <span aria-hidden>⚠</span>
           <span style={{ flex: 1 }}>{error}</span>
-          <button className="iconbtn" onClick={() => void load()}>↻</button>
+          <button className="notice__action" onClick={() => void load()}>
+            Повторить
+          </button>
         </div>
       )}
 
@@ -229,7 +261,7 @@ export default function App() {
           )}
 
           {items.length === 0 ? (
-            <Empty query={route.query} />
+            <Empty query={route.query} month={route.month} />
           ) : (
             grouped.map(([day, dayItems]) => (
               <section key={day}>
@@ -247,8 +279,8 @@ export default function App() {
           )}
 
           {hasMore && (
-            <button className="more" onClick={() => void loadMore()}>
-              Показать ещё · осталось {total - items.length}
+            <button className="more" onClick={() => void loadMore()} disabled={loadingMore}>
+              {loadingMore ? "Гружу…" : `Показать ещё · осталось ${Math.max(total - items.length, 0)}`}
             </button>
           )}
 
@@ -267,12 +299,23 @@ function Hero({ report }: { report: MonthReport }) {
       <div className="hero__value">{money(report.total)}</div>
       {!zero && report.compare && (
         <div className="hero__delta">
-          {report.compare.percent >= 0 ? "↑" : "↓"} {Math.abs(report.compare.percent)}% к прошлому
-          месяцу{report.compare.partial ? ` · за первые ${report.compare.days} дн.` : ""}
+          {deltaText(report)}
+          {report.compare.partial ? ` · за первые ${report.compare.days} дн.` : ""}
         </div>
       )}
     </div>
   );
+}
+
+/** Процент врёт на малой базе — тогда показываем разницу в рублях. */
+function deltaText(report: MonthReport): string {
+  const c = report.compare!;
+  const prevMonth = monthOf(report.month === 1 ? 12 : report.month - 1);
+  if (c.has_percent) {
+    return `${c.percent >= 0 ? "↑" : "↓"} ${Math.abs(c.percent)}% к ${prevMonth}`;
+  }
+  const grew = !c.difference.startsWith("-");
+  return `${grew ? "↑" : "↓"} ${money(c.difference.replace("-", ""))} к ${prevMonth}`;
 }
 
 function SearchSummary({ query, total }: { query: string; total: number }) {
@@ -321,37 +364,32 @@ function Row({ tx, me }: { tx: Tx; me: Me | null }) {
   );
 }
 
+async function leave(everywhere: boolean) {
+  try {
+    await api.logout(everywhere);
+  } finally {
+    // Даже если запрос не дошёл, перезагрузка покажет экран входа.
+    window.location.reload();
+  }
+}
+
 function Footer({ me }: { me: Me | null }) {
   return (
     <div className="foot">
       <span>{me?.name ?? "…"}</span>
-      <button
-        onClick={async () => {
-          await api.logout();
-          window.location.reload();
-        }}
-      >
-        Выйти
-      </button>
-      <button
-        onClick={async () => {
-          await api.logout(true);
-          window.location.reload();
-        }}
-      >
-        Выйти отовсюду
-      </button>
+      <button onClick={() => void leave(false)}>Выйти</button>
+      <button onClick={() => void leave(true)}>Выйти отовсюду</button>
     </div>
   );
 }
 
-function Empty({ query }: { query: string }) {
+function Empty({ query, month }: { query: string; month: number }) {
   if (query) {
     return <div className="empty">Ничего не нашлось по «{query}»</div>;
   }
   return (
     <div className="empty">
-      <p>Трат за этот месяц нет.</p>
+      <p>В {monthOf(month)} трат нет.</p>
       <p>
         Напиши боту <code>600 лимонад</code> — запишется сюда.
       </p>

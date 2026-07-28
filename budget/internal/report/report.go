@@ -175,30 +175,52 @@ func sortedLines(lines []Line, total decimal.Decimal) []Line {
 // не больше, чем в прошлом месяце вообще есть — иначе 31 июля сравнивалось бы
 // с несуществующим 31 июня. Первые дни месяца не сравниваем совсем: два дня
 // против двух дней дают разброс в сотни процентов, и это не информация.
-func ComparableRange(now time.Time, year int, month time.Month, loc *time.Location) (from, to time.Time, days int, partial bool, ok bool) {
+func ComparableRange(now time.Time, year int, month time.Month, loc *time.Location) (Comparison, bool) {
 	const minDays = 4
 
 	start, end := MonthRange(year, month, loc)
-	prevStart, prevEnd := MonthRange(year, month, loc)
-	prevStart = start.AddDate(0, -1, 0)
-	prevEnd = start
+	prevStart := start.AddDate(0, -1, 0)
+	prevEnd := start
 
 	current := now.In(loc)
-	if current.Before(end) && !current.Before(start) {
-		// Месяц ещё идёт: берём столько же дней, сколько прошло.
+	if current.Before(start) {
+		// Месяц ещё не начался — сравнивать нечего.
+		return Comparison{}, false
+	}
+
+	if current.Before(end) {
+		// Месяц идёт: берём столько же дней, сколько прошло, но не больше,
+		// чем в прошлом месяце вообще есть. Обрезать надо обе стороны, иначе
+		// 31 июля сравнивается с 30 днями июня и дельта завышена.
 		elapsed := int(startOfDay(current).Sub(start).Hours()/24) + 1
-		inPrev := int(prevEnd.Sub(prevStart).Hours() / 24)
-		if elapsed < minDays {
-			return time.Time{}, time.Time{}, 0, false, false
-		}
-		if elapsed > inPrev {
+		if inPrev := int(prevEnd.Sub(prevStart).Hours() / 24); elapsed > inPrev {
 			elapsed = inPrev
 		}
-		return prevStart, prevStart.AddDate(0, 0, elapsed), elapsed, true, true
+		if elapsed < minDays {
+			return Comparison{}, false
+		}
+		return Comparison{
+			From: prevStart, To: prevStart.AddDate(0, 0, elapsed),
+			CurrentFrom: start, CurrentTo: start.AddDate(0, 0, elapsed),
+			Days: elapsed, Partial: true,
+		}, true
 	}
 
 	// Месяц закрыт — сравниваем целиком с целым.
-	return prevStart, prevEnd, int(prevEnd.Sub(prevStart).Hours() / 24), false, true
+	return Comparison{
+		From: prevStart, To: prevEnd,
+		CurrentFrom: start, CurrentTo: end,
+		Days: int(prevEnd.Sub(prevStart).Hours() / 24),
+	}, true
+}
+
+// Comparison — что с чем сравнивать. Обе стороны заданы явно: сравнивать
+// полный текущий месяц с обрезанным прошлым — значит завышать дельту.
+type Comparison struct {
+	From, To               time.Time // отрезок прошлого месяца
+	CurrentFrom, CurrentTo time.Time // сопоставимый отрезок текущего
+	Days                   int
+	Partial                bool
 }
 
 func startOfDay(t time.Time) time.Time {

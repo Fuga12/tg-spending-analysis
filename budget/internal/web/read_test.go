@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -164,9 +165,18 @@ func TestPendingCounted(t *testing.T) {
 		}
 	}
 
-	id := addTx(t, store, testUserID, "600", "непонятное", classify.KindExpense, now, nil)
-	if _, err := store.MarkForReview(context.Background(), id, other); err != nil {
-		t.Fatalf("пометка: %v", err)
+	// Так эта запись и появляется: бот сохранил её деградированной, воркер
+	// не смог разобрать и закрыл «Прочим» вслепую.
+	id, err := store.InsertTransaction(context.Background(), storage.Transaction{
+		PayerID: testUserID, Beneficiary: classify.BenPayer, Kind: classify.KindExpense,
+		Amount: decimal.RequireFromString("600"), Description: "непонятное",
+		RawText: "600 непонятное", NeedsClassification: true, SpentAt: now,
+	})
+	if err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
+	if ok, err := store.MarkForReview(context.Background(), id, other); err != nil || !ok {
+		t.Fatalf("пометка: ok=%v err=%v", ok, err)
 	}
 	addTx(t, store, testUserID, "400", "такси", classify.KindExpense, now, &other)
 
@@ -180,6 +190,70 @@ func TestPendingCounted(t *testing.T) {
 	getJSON(t, client, base+"/api/transactions?pending=1", &list)
 	if list.Total != 1 || list.Items[0].ID != id {
 		t.Errorf("фильтр «на проверку» дал %+v", list.Items)
+	}
+}
+
+func TestMarkForReviewDoesNotClobberManual(t *testing.T) {
+	// Пока воркер ходил в модель, человек поставил категорию руками.
+	// Затирать её нельзя (webapp-design.md §10).
+	store, _, _ := loggedIn(t)
+
+	cats, _ := store.Categories(context.Background())
+	var food, other int32
+	for _, c := range cats {
+		switch c.Name {
+		case "Продукты":
+			food = c.ID
+		case classify.CategoryOther:
+			other = c.ID
+		}
+	}
+
+	id, err := store.InsertTransaction(context.Background(), storage.Transaction{
+		PayerID: testUserID, Beneficiary: classify.BenPayer, Kind: classify.KindExpense,
+		Amount: decimal.RequireFromString("600"), Description: "непонятное",
+		RawText: "600 непонятное", NeedsClassification: true, SpentAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
+
+	// Человек успел раньше.
+	if ok, err := store.SetCategory(context.Background(), id, testUserID, food); err != nil || !ok {
+		t.Fatalf("ручная категория: ok=%v err=%v", ok, err)
+	}
+	// Воркер вернулся ни с чем.
+	if ok, _ := store.MarkForReview(context.Background(), id, other); ok {
+		t.Error("воркер не должен трогать запись, которую уже поправил человек")
+	}
+
+	tx, _ := store.Transaction(context.Background(), id)
+	if tx.CategoryName != "Продукты" || tx.NeedsReview {
+		t.Errorf("запись = %s, на проверку %v — ручная правка потеряна", tx.CategoryName, tx.NeedsReview)
+	}
+}
+
+func TestSearchIgnoresHugeNumbers(t *testing.T) {
+	// «1e2147483000» decimal разворачивает в гигабайты и кладёт процесс
+	// вместе с ботом — числом такое считаться не должно.
+	_, base, client := loggedIn(t)
+
+	for _, q := range []string{"1e2147483000", "%", "_", "1e9000"} {
+		resp, err := client.Get(base + "/api/transactions?q=" + url.QueryEscape(q))
+		if err != nil {
+			t.Fatalf("запрос %q: %v", q, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("запрос %q дал код %d", q, resp.StatusCode)
+		}
+	}
+
+	// И метасимволы LIKE не находят всё подряд.
+	var all listResponse
+	getJSON(t, client, base+"/api/transactions?q=%25", &all)
+	if all.Total != 0 {
+		t.Errorf("«%%» нашло %d записей — метасимволы должны экранироваться", all.Total)
 	}
 }
 

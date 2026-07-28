@@ -1,6 +1,7 @@
 package web
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -46,12 +47,12 @@ func (s *Server) handleTransactions(w http.ResponseWriter, r *http.Request) {
 
 	filter := storage.TransactionFilter{
 		PayerID:  intParam(q.Get("payer")),
-		Category: int32(intParam(q.Get("category"))),
+		Category: categoryParam(q.Get("category")),
 		Kind:     q.Get("kind"),
 		Pending:  q.Get("pending") == "1",
 		Query:    q.Get("q"),
 		Limit:    int(intParam(q.Get("limit"))),
-		Offset:   int(intParam(q.Get("offset"))),
+		Offset:   int(max64(intParam(q.Get("offset")), 0)),
 	}
 
 	// Поиск идёт по всем месяцам — иначе искать незачем (§3.2).
@@ -96,7 +97,7 @@ func (s *Server) view(t storage.Transaction, me int64) txView {
 		Kind:        t.Kind,
 		SpentAt:     t.SpentAt.In(s.cfg.TZ).Format(time.RFC3339),
 		RawText:     t.RawText,
-		NeedsReview: t.NeedsReview || t.NeedsClassification,
+		NeedsReview: t.NeedsReview,
 		Mine:        t.PayerID == me,
 	}
 	if t.UpdatedAt != nil {
@@ -120,10 +121,12 @@ type lineView struct {
 // числа выходит «−90%», и это враньё. При совсем коротком отрезке дельту не
 // показываем вовсе (webapp-design.md §3.3).
 type compareView struct {
-	Days     int    `json:"days"`
-	Previous string `json:"previous"`
-	Percent  int    `json:"percent"`
-	Partial  bool   `json:"partial"`
+	Days       int    `json:"days"`
+	Previous   string `json:"previous"`
+	Percent    int    `json:"percent"`
+	HasPercent bool   `json:"has_percent"`
+	Difference string `json:"difference"`
+	Partial    bool   `json:"partial"`
 }
 
 type monthResponse struct {
@@ -178,35 +181,66 @@ func (s *Server) handleMonth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// minCompareBase — ниже этой суммы проценты бессмысленны: 350 ₽ против
+// 25 000 дают «+7043%», и это не информация, а шум (webapp-design.md §3.3).
+var minCompareBase = decimal.NewFromInt(1000)
+
+// maxComparePercent — за этой границей показываем разницу в рублях.
+const maxComparePercent = 200
+
 // compare считает сопоставимый отрезок прошлого месяца.
 func (s *Server) compare(r *http.Request, year int, month time.Month, total decimal.Decimal) (*compareView, bool) {
-	prevFrom, prevTo, days, partial, ok := report.ComparableRange(time.Now(), year, month, s.cfg.TZ)
+	if !total.IsPositive() {
+		// Пустой месяц сравнивать не с чем.
+		return nil, false
+	}
+	c, ok := report.ComparableRange(s.now(), year, month, s.cfg.TZ)
 	if !ok {
 		return nil, false
 	}
 
-	rows, err := s.store.Expenses(r.Context(), prevFrom, prevTo)
+	prev, err := s.sum(r, c.From, c.To)
 	if err != nil {
 		s.log.Warn("сравнение с прошлым месяцем", "err", err)
 		return nil, false
 	}
-
-	prev := decimal.Zero
-	for _, row := range rows {
-		prev = prev.Add(row.Amount)
-	}
 	if !prev.IsPositive() {
-		// Делить на ноль нечем, а «+∞%» — не информация.
 		return nil, false
 	}
 
-	percent := total.Sub(prev).Mul(decimal.NewFromInt(100)).Div(prev).Round(0).IntPart()
-	return &compareView{
-		Days:     days,
-		Previous: prev.String(),
-		Percent:  int(percent),
-		Partial:  partial,
-	}, true
+	// Сравниваем сопоставимые отрезки: у незакрытого месяца это не весь
+	// месяц, а столько же дней, сколько прошло.
+	current := total
+	if c.Partial {
+		if current, err = s.sum(r, c.CurrentFrom, c.CurrentTo); err != nil {
+			s.log.Warn("сопоставимый отрезок текущего месяца", "err", err)
+			return nil, false
+		}
+	}
+
+	view := &compareView{Days: c.Days, Previous: prev.String(), Partial: c.Partial}
+	percent := current.Sub(prev).Mul(decimal.NewFromInt(100)).Div(prev).Round(0).IntPart()
+	if prev.LessThan(minCompareBase) || percent > maxComparePercent || percent < -maxComparePercent {
+		// База слишком мала — процент врёт. Показываем разницу в рублях.
+		view.Difference = current.Sub(prev).String()
+	} else {
+		view.Percent = int(percent)
+		view.HasPercent = true
+	}
+	return view, true
+}
+
+// sum складывает расходы за отрезок.
+func (s *Server) sum(r *http.Request, from, to time.Time) (decimal.Decimal, error) {
+	rows, err := s.store.Expenses(r.Context(), from, to)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	out := decimal.Zero
+	for _, row := range rows {
+		out = out.Add(row.Amount)
+	}
+	return out, nil
 }
 
 func lines(in []report.Line) []lineView {
@@ -264,6 +298,22 @@ func first(v []string) string {
 		return ""
 	}
 	return strings.TrimSpace(v[0])
+}
+
+// categoryParam не даёт большому числу молча обрезаться до чужой категории.
+func categoryParam(raw string) int32 {
+	n := intParam(raw)
+	if n <= 0 || n > math.MaxInt32 {
+		return 0
+	}
+	return int32(n)
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func intParam(raw string) int64 {

@@ -30,11 +30,20 @@ export type TxPage = { items: Tx[]; total: number; has_more: boolean };
 
 export type Line = { id: number; name: string; amount: string; percent: number };
 
+export type Compare = {
+  days: number;
+  previous: string;
+  percent: number;
+  has_percent: boolean;
+  difference: string;
+  partial: boolean;
+};
+
 export type MonthReport = {
   year: number;
   month: number;
   total: string;
-  compare: { days: number; previous: string; percent: number; partial: boolean } | null;
+  compare: Compare | null;
   categories: Line[];
   payers: Line[];
   beneficiaries: Line[];
@@ -42,7 +51,13 @@ export type MonthReport = {
 };
 
 async function get<T>(path: string): Promise<T> {
-  const resp = await fetch(path, { credentials: "same-origin" });
+  let resp: Response;
+  try {
+    resp = await fetch(path, { credentials: "same-origin" });
+  } catch {
+    // Сообщение браузера («Failed to fetch») человеку ничего не говорит.
+    throw new Error("Сервер не отвечает");
+  }
   if (resp.status === 401) throw new Unauthorized("нужен вход");
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({ error: "" }));

@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -100,10 +101,12 @@ func (s *Store) SetCategory(ctx context.Context, id, payerID int64, categoryID i
 // MarkForReview закрывает запись категорией и помечает, что выбрал её не
 // человек: сайт покажет такие отдельным блоком (webapp-design.md §3.8).
 func (s *Store) MarkForReview(ctx context.Context, id int64, categoryID int32) (bool, error) {
+	// Условие needs_classification обязательно: пока воркер ходил в модель,
+	// человек мог поставить категорию руками, и затирать её нельзя.
 	tag, err := s.pool.Exec(ctx, `
 		update transactions
 		set category_id = $2, needs_classification = false, needs_review = true
-		where id = $1 and deleted_at is null`, id, categoryID)
+		where id = $1 and deleted_at is null and needs_classification`, id, categoryID)
 	if err != nil {
 		return false, err
 	}
@@ -299,14 +302,19 @@ func (s *Store) ListTransactions(ctx context.Context, f TransactionFilter) ([]Tr
 		add("t.kind = $%d", f.Kind)
 	}
 	if f.Pending {
-		where = append(where, "(t.needs_review or t.needs_classification)")
+		// Только needs_review: needs_classification живёт минуты и означает
+		// «воркер ещё не дошёл», а не «нужен человек» (webapp-design.md §3.8).
+		where = append(where, "t.needs_review")
 	}
 	if q := strings.TrimSpace(f.Query); q != "" {
 		// Ищем и по описанию, и по сумме: «1200» должно находиться так же,
 		// как «пятёрочка».
-		args = append(args, "%"+q+"%")
+		args = append(args, "%"+escapeLike(q)+"%")
 		byText := fmt.Sprintf("t.description ilike $%d", len(args))
-		if amount, err := decimal.NewFromString(strings.ReplaceAll(q, ",", ".")); err == nil {
+		// Числом считаем только то, что похоже на сумму: «1e2147483000»
+		// разворачивается decimal в гигабайты и кладёт процесс вместе с ботом.
+		if amountLike.MatchString(q) {
+			amount := decimal.RequireFromString(strings.ReplaceAll(q, ",", "."))
 			args = append(args, amount.String())
 			byText += fmt.Sprintf(" or t.amount = $%d::numeric", len(args))
 		}
@@ -360,12 +368,21 @@ func (s *Store) ListTransactions(ctx context.Context, f TransactionFilter) ([]Tr
 	return out, total, rows.Err()
 }
 
+// amountLike — то, что можно считать суммой в поиске.
+var amountLike = regexp.MustCompile(`^\d{1,12}([.,]\d{1,2})?$`)
+
+// escapeLike обезвреживает метасимволы LIKE: иначе «%» находит всё.
+func escapeLike(s string) string {
+	r := strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_")
+	return r.Replace(s)
+}
+
 // PendingReview — сколько записей ждут человека (§3.8 webapp-design.md).
 func (s *Store) PendingReview(ctx context.Context, from, to time.Time) (int, error) {
 	var n int
 	err := s.pool.QueryRow(ctx, `
 		select count(*) from transactions
-		where deleted_at is null and (needs_review or needs_classification)
+		where deleted_at is null and needs_review
 		  and spent_at >= $1 and spent_at < $2`, from, to).Scan(&n)
 	return n, err
 }

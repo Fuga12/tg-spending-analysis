@@ -39,6 +39,7 @@ type Server struct {
 	log     *slog.Logger
 	http    *http.Server
 	limiter *rateLimiter
+	now     func() time.Time // подменяется в тестах
 }
 
 // New собирает сервер. Ошибка означает, что запускаться нельзя.
@@ -58,7 +59,7 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 		return nil, err
 	}
 
-	s := &Server{cfg: cfg, store: store, log: log, limiter: newRateLimiter(authAttemptsPerMinute)}
+	s := &Server{cfg: cfg, store: store, log: log, limiter: newRateLimiter(authAttemptsPerMinute), now: time.Now}
 
 	// Под сессией — всё, что трогает данные. Health и статика открыты:
 	// иначе страница не загрузится до входа.
