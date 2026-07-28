@@ -1,6 +1,8 @@
 [Unit]
 Description=Telegram-бот учёта совместного бюджета
-After=network-online.target postgresql.service
+# Ждём и сеть, и базу. Если Postgres в контейнере — это докер (на этой
+# машине он ставится снапом, отсюда имя юнита).
+After=network-online.target postgresql.service snap.docker.dockerd.service
 Wants=network-online.target
 
 [Service]
