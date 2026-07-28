@@ -15,4 +15,3 @@ func (s *Store) UpsertUser(ctx context.Context, id int64, name string) error {
 		on conflict (id) do update set name = excluded.name`, id, name)
 	return err
 }
-
