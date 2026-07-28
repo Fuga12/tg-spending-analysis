@@ -1,0 +1,27 @@
+# База для разработки и тестов. Порт 5433 — 5432 на этой машине уже занят
+# посторонним контейнером.
+#
+# Внимание: §14 плана запрещает Docker в этой итерации. Compose здесь поднимает
+# только базу, сам бот по-прежнему собирается в один бинарь и на проде живёт
+# под systemd (§12) — контейнеров в деплое нет.
+services:
+  postgres:
+    image: postgres:16
+    container_name: budget_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: budget
+      POSTGRES_PASSWORD: budget
+      POSTGRES_DB: budget
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - budget_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U budget -d budget"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  budget_pgdata:

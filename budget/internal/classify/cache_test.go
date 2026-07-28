@@ -42,8 +42,19 @@ func (c *countingLLM) Parse(context.Context, string, []storage.Category) ([]RawI
 	return c.items, nil
 }
 
+// openGate — предохранители, которые всегда пропускают: их поведение
+// проверяется отдельно, в breaker_test.go.
+type openGate struct{}
+
+func (openGate) Allow() bool  { return true }
+func (openGate) Record(error) {}
+
+type alwaysAllowBudget struct{}
+
+func (alwaysAllowBudget) Allow(context.Context) bool { return true }
+
 func newService(words map[string]storage.WordHit, llm *countingLLM) *Service {
-	return NewService(&fakeDict{words: words}, llm, quietLog())
+	return NewService(&fakeDict{words: words}, llm, openGate{}, alwaysAllowBudget{}, quietLog())
 }
 
 func TestCacheHitSkipsAPI(t *testing.T) {

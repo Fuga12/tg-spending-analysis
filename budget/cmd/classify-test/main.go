@@ -50,7 +50,10 @@ func main() {
 	}, store, log)
 
 	// Разбор идёт от имени владельца бота: у него свой личный кэш слов.
-	svc := classify.NewService(store, llm, log)
+	// Предохранители те же, что в боевом режиме, — проверять надо то же самое.
+	breaker := classify.NewBreaker(cfg.LLMBreakerCooldown, log)
+	budget := classify.NewBudget(cfg.LLMMonthlyTokenBudget, store, nil, log)
+	svc := classify.NewService(store, llm, breaker, budget, log)
 
 	// Расход этого разбора считается как прирост llm_usage: заодно видно,
 	// появилась ли там вообще строка.
