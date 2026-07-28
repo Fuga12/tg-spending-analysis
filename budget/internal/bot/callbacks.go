@@ -13,11 +13,6 @@ import (
 	"budget/internal/storage"
 )
 
-// maxRememberedWords — сколько слов правки уезжает в личный кэш. Модель даёт
-// описание из 1-3 слов; длиннее — значит описание собрано из сырого текста,
-// и учить по нему словарь нельзя (§8).
-const maxRememberedWords = 3
-
 // onBeneficiary меняет, на кого потрачено, и запоминает выбор как ручной:
 // ручная правка приоритетнее ответа модели и не перезатирается (§8).
 func (b *Bot) onBeneficiary(beneficiary string) tele.HandlerFunc {
@@ -35,7 +30,7 @@ func (b *Bot) onBeneficiary(beneficiary string) tele.HandlerFunc {
 			return respond(c, "База не отвечает")
 		}
 		tx.Beneficiary = beneficiary
-		b.rememberChoice(ctx, tx)
+		classify.RememberManual(ctx, b.store, tx, b.log)
 
 		if err := b.edit(c, tx); err != nil {
 			return err
@@ -96,7 +91,7 @@ func (b *Bot) onCategoryPick(c tele.Context) error {
 	id := int32(catID)
 	tx.CategoryID = &id
 	tx.CategoryName = categoryName(cats, id)
-	b.rememberChoice(ctx, tx)
+	classify.RememberManual(ctx, b.store, tx, b.log)
 	// Флаг снимается только после того, как правка учтена: до этого места
 	// tx.NeedsClassification говорит, что описание собрано из сырого текста.
 	tx.NeedsClassification = false
@@ -152,29 +147,6 @@ func (b *Bot) owned(ctx context.Context, c tele.Context) (storage.Transaction, e
 		return storage.Transaction{}, errNotYours
 	}
 	return tx, nil
-}
-
-// rememberChoice запоминает ручную правку в личном кэше слов.
-func (b *Bot) rememberChoice(ctx context.Context, tx storage.Transaction) {
-	if tx.CategoryID == nil || tx.Kind != classify.KindExpense {
-		return
-	}
-	// У деградированной записи описание — это весь текст сообщения. Ручная
-	// привязка не перезатирается никогда, так что мусор в словаре останется
-	// навсегда: лучше не запоминать вовсе.
-	if tx.NeedsClassification {
-		return
-	}
-
-	words := classify.SignificantWords(tx.Description)
-	if len(words) > maxRememberedWords {
-		return
-	}
-	for _, w := range words {
-		if err := b.store.UpsertWord(ctx, tx.PayerID, w, *tx.CategoryID, tx.Beneficiary, storage.SourceManual); err != nil {
-			b.log.Warn("не запомнил ручную правку", "err", err, "word", w)
-		}
-	}
 }
 
 // edit переписывает исходное сообщение, а не шлёт новое (§9).

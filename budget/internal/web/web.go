@@ -69,6 +69,9 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 	api.HandleFunc("GET /api/categories", s.handleCategories)
 	api.HandleFunc("GET /api/transactions", s.handleTransactions)
 	api.HandleFunc("GET /api/report/month", s.handleMonth)
+	api.HandleFunc("POST /api/transactions", s.handleCreate)
+	api.HandleFunc("PATCH /api/transactions/{id}", s.handlePatch)
+	api.HandleFunc("DELETE /api/transactions/{id}", s.handleDelete)
 	// Свои заглушки на прочие методы: встроенный 405 у ServeMux — текстовый,
 	// а под /api всё обязано быть JSON (webapp.md §4).
 	api.HandleFunc("/api/me", methodNotAllowed)
@@ -76,6 +79,7 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 	api.HandleFunc("/api/categories", methodNotAllowed)
 	api.HandleFunc("/api/transactions", methodNotAllowed)
 	api.HandleFunc("/api/report/month", methodNotAllowed)
+	api.HandleFunc("/api/transactions/{id}", methodNotAllowed)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
@@ -83,7 +87,7 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 	mux.HandleFunc("/auth", methodNotAllowed)
 	for _, path := range []string{
 		"/api/me", "/api/session", "/api/categories",
-		"/api/transactions", "/api/report/month",
+		"/api/transactions", "/api/transactions/", "/api/report/month",
 	} {
 		mux.Handle(path, s.requireSession(api))
 	}

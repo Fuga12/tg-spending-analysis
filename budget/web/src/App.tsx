@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, Me, MonthReport, Tx, Unauthorized } from "./api";
+import { api, Category, Me, MonthReport, Tx, Unauthorized } from "./api";
+import Sheet from "./Sheet";
 import { beneficiaryLabel, dayLabel, initials, money, monthName, todayFrom } from "./format";
 
 const PAGE = 200;
@@ -60,6 +61,10 @@ export default function App() {
   const [expired, setExpired] = useState(false);
   const [searching, setSearching] = useState(false);
   const [stuck, setStuck] = useState(false);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [editing, setEditing] = useState<Tx | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [toast, setToast] = useState<{ text: string; undo?: () => void } | null>(null);
 
   // Номер запроса: ответы по параллельным соединениям приходят не по
   // порядку, и без этого три быстрых нажатия «‹» оставляют на экране июнь
@@ -90,7 +95,15 @@ export default function App() {
 
   useEffect(() => {
     api.me().then(setMe).catch(handleAuthError);
+    api.categories().then(setCategories).catch(() => {});
   }, []);
+
+  // Тост живёт шесть секунд: столько нужно, чтобы передумать удалять.
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 6000);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   function handleAuthError(err: unknown) {
     if (err instanceof Unauthorized) setExpired(true);
@@ -271,7 +284,7 @@ export default function App() {
                 </div>
                 <div className="rows">
                   {dayItems.map((tx) => (
-                    <Row key={tx.id} tx={tx} me={me} />
+                    <Row key={tx.id} tx={tx} me={me} onOpen={() => setEditing(tx)} />
                   ))}
                 </div>
               </section>
@@ -285,6 +298,47 @@ export default function App() {
           )}
 
           <Footer me={me} />
+        </div>
+      )}
+
+      {!loading && (
+        <button className="fab" onClick={() => setCreating(true)} aria-label="Добавить запись">
+          +
+        </button>
+      )}
+
+      {(editing || creating) && (
+        <Sheet
+          tx={editing}
+          categories={categories}
+          defaultDay={today}
+          onClose={() => {
+            setEditing(null);
+            setCreating(false);
+          }}
+          onSaved={() => void load()}
+          onDeleted={(tx) => {
+            setItems((prev) => prev.filter((item) => item.id !== tx.id));
+            setToast({
+              text: "Удалено",
+              undo: async () => {
+                await api.restore(tx.id);
+                setToast(null);
+                void load();
+              },
+            });
+          }}
+        />
+      )}
+
+      {toast && (
+        <div className="toast" role="status">
+          <span style={{ flex: 1 }}>{toast.text}</span>
+          {toast.undo && (
+            <button className="toast__action" onClick={() => void toast.undo!()}>
+              Вернуть
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -332,14 +386,14 @@ function SearchSummary({ query, total }: { query: string; total: number }) {
   );
 }
 
-function Row({ tx, me }: { tx: Tx; me: Me | null }) {
+function Row({ tx, me, onOpen }: { tx: Tx; me: Me | null; onOpen: () => void }) {
   const isMine = me ? tx.payer_id === me.id : tx.mine;
   const name = isMine ? me?.name ?? "Я" : me?.partner?.name ?? "Партнёр";
   const transfer = tx.kind === "transfer";
   const income = tx.kind === "income";
 
   return (
-    <div className={`row${tx.needs_review ? " row--review" : ""}`}>
+    <button className={`row${tx.needs_review ? " row--review" : ""}`} onClick={onOpen}>
       <div className="row__main">
         <div className="row__title">
           {transfer ? "↔ Перевод" : tx.description || "без описания"}
@@ -360,7 +414,7 @@ function Row({ tx, me }: { tx: Tx; me: Me | null }) {
           {initials(name, isMine ? me?.partner?.name : me?.name)}
         </span>
       </div>
-    </div>
+    </button>
   );
 }
 

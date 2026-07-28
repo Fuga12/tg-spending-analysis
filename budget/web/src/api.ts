@@ -3,6 +3,15 @@
 
 export class Unauthorized extends Error {}
 
+/** 409: запись изменили, пока её правили. Несёт текущее состояние. */
+export class Conflict extends Error {
+  constructor(public current: Tx) {
+    super("запись изменилась");
+  }
+}
+
+export type Category = { id: number; name: string; beneficiary: string };
+
 export type Me = {
   id: number;
   name: string;
@@ -66,8 +75,40 @@ async function get<T>(path: string): Promise<T> {
   return resp.json() as Promise<T>;
 }
 
+async function send<T>(method: string, path: string, body: unknown): Promise<T> {
+  let resp: Response;
+  try {
+    resp = await fetch(path, {
+      method,
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    throw new Error("Сервер не отвечает");
+  }
+  if (resp.status === 401) throw new Unauthorized("нужен вход");
+
+  const text = await resp.text();
+  const data = text ? JSON.parse(text) : {};
+  if (resp.status === 409 && data.current) throw new Conflict(data.current as Tx);
+  if (!resp.ok) throw new Error(data.error || `ошибка ${resp.status}`);
+  return data as T;
+}
+
 export const api = {
   me: () => get<Me>("/api/me"),
+
+  categories: () => get<Category[]>("/api/categories"),
+
+  patch: (id: number, body: Record<string, unknown>) =>
+    send<Tx>("PATCH", `/api/transactions/${id}`, body),
+
+  create: (body: Record<string, unknown>) => send<Tx>("POST", "/api/transactions", body),
+
+  remove: (id: number) => send<{ ok: boolean }>("DELETE", `/api/transactions/${id}`, undefined),
+
+  restore: (id: number) => send<Tx>("PATCH", `/api/transactions/${id}`, { deleted: false }),
 
   month: (year: number, month: number) =>
     get<MonthReport>(`/api/report/month?year=${year}&month=${month}`),

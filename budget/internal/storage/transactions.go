@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -55,12 +56,14 @@ func (s *Store) Transaction(ctx context.Context, id int64) (Transaction, error) 
 	)
 	err := s.pool.QueryRow(ctx, `
 		select t.id, t.payer_id, t.beneficiary, t.kind, t.amount::text, t.description,
-		       t.category_id, c.name, t.raw_text, t.needs_classification, t.spent_at, t.created_at
+		       t.category_id, c.name, t.raw_text, t.needs_classification, t.needs_review,
+		       t.spent_at, t.created_at, t.updated_at
 		from transactions t
 		left join categories c on c.id = t.category_id
 		where t.id = $1 and t.deleted_at is null`, id).
 		Scan(&t.ID, &t.PayerID, &t.Beneficiary, &t.Kind, &amount, &t.Description,
-			&t.CategoryID, &cat, &t.RawText, &t.NeedsClassification, &t.SpentAt, &t.CreatedAt)
+			&t.CategoryID, &cat, &t.RawText, &t.NeedsClassification, &t.NeedsReview,
+			&t.SpentAt, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return Transaction{}, err
 	}
@@ -264,6 +267,13 @@ func (s *Store) HasRecordedOn(ctx context.Context, userID int64, from, to time.T
 	return exists, err
 }
 
+// ErrNoRows — записи нет или она удалена. ErrNotOwner — запись чужая:
+// различать важно, иначе человека обвиняют в чужой трате на его же (§9).
+var (
+	ErrNoRows   = errors.New("записи нет")
+	ErrNotOwner = errors.New("запись чужая")
+)
+
 // TransactionFilter — что показать в списке. Пустые поля означают «всё».
 type TransactionFilter struct {
 	From, To time.Time
@@ -385,4 +395,113 @@ func (s *Store) PendingReview(ctx context.Context, from, to time.Time) (int, err
 		where deleted_at is null and needs_review
 		  and spent_at >= $1 and spent_at < $2`, from, to).Scan(&n)
 	return n, err
+}
+
+// ErrVersionConflict — запись изменили, пока её правили. Возвращается вместо
+// молчаливой перезаписи: одну запись правят сайт, бот и воркер (webapp.md §4).
+var ErrVersionConflict = errors.New("запись изменилась")
+
+// TransactionPatch — что меняем. Nil-поля не трогаются.
+type TransactionPatch struct {
+	Amount      *decimal.Decimal
+	Description *string
+	CategoryID  **int32 // указатель на указатель: nil — не трогать, *nil — обнулить
+	Beneficiary *string
+	Kind        *string
+	SpentAt     *time.Time
+	Restore     bool
+}
+
+// UpdateTransaction применяет правку с проверкой версии.
+//
+// expected — updated_at, который видел клиент (nil, если запись ещё не
+// правили). Расхождение означает, что запись успели изменить: возвращаем
+// ErrVersionConflict, а не затираем чужую работу.
+func (s *Store) UpdateTransaction(ctx context.Context, id, payerID int64, p TransactionPatch, expected *time.Time) (Transaction, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Transaction{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var (
+		current   time.Time
+		hasUpd    bool
+		updatedAt *time.Time
+		owner     int64
+		deleted   *time.Time
+	)
+	err = tx.QueryRow(ctx, `
+		select payer_id, updated_at, deleted_at from transactions
+		where id = $1 for update`, id).Scan(&owner, &updatedAt, &deleted)
+	if err != nil {
+		if isNoRows(err) {
+			return Transaction{}, ErrNoRows
+		}
+		return Transaction{}, err
+	}
+	if owner != payerID {
+		return Transaction{}, ErrNotOwner
+	}
+	if deleted != nil && !p.Restore {
+		return Transaction{}, ErrNoRows
+	}
+	if updatedAt != nil {
+		current, hasUpd = *updatedAt, true
+	}
+	if !sameVersion(expected, current, hasUpd) {
+		return Transaction{}, ErrVersionConflict
+	}
+
+	set := []string{"updated_at = now()"}
+	args := []any{id}
+	add := func(expr string, val any) {
+		args = append(args, val)
+		set = append(set, fmt.Sprintf(expr, len(args)))
+	}
+
+	if p.Amount != nil {
+		add("amount = $%d::numeric", p.Amount.String())
+	}
+	if p.Description != nil {
+		add("description = $%d", *p.Description)
+	}
+	if p.CategoryID != nil {
+		add("category_id = $%d", *p.CategoryID)
+		// Категорию поставил человек — воркеру тут больше делать нечего.
+		set = append(set, "needs_classification = false", "needs_review = false")
+	}
+	if p.Beneficiary != nil {
+		add("beneficiary = $%d", *p.Beneficiary)
+	}
+	if p.Kind != nil {
+		add("kind = $%d", *p.Kind)
+	}
+	if p.SpentAt != nil {
+		add("spent_at = $%d", *p.SpentAt)
+	}
+	if p.Restore {
+		set = append(set, "deleted_at = null")
+	}
+
+	if _, err := tx.Exec(ctx,
+		`update transactions set `+strings.Join(set, ", ")+` where id = $1`, args...); err != nil {
+		return Transaction{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Transaction{}, err
+	}
+	return s.Transaction(ctx, id)
+}
+
+// sameVersion сверяет версию с точностью до микросекунды: postgres хранит
+// timestamptz именно так, и round-trip через JSON не должен ломать сравнение.
+func sameVersion(expected *time.Time, current time.Time, hasCurrent bool) bool {
+	if expected == nil {
+		return !hasCurrent
+	}
+	if !hasCurrent {
+		return false
+	}
+	return expected.UnixMicro() == current.UnixMicro()
 }
