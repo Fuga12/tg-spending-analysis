@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -122,13 +123,38 @@ func Load() (*Config, error) {
 	}
 
 	c.WebInsecureCookies = envBool("WEB_INSECURE_COOKIES")
-	if c.WebEnabled() && !strings.HasPrefix(c.WebBaseURL, "https://") && !c.WebInsecureCookies {
-		// Без TLS браузер выбросит cookie с флагом Secure, и вход будет
-		// молча не работать. Пусть это будет осознанным выбором.
-		return nil, errors.New("WEB_BASE_URL без https требует WEB_INSECURE_COOKIES=1")
+	if err := c.checkWeb(); err != nil {
+		return nil, err
 	}
 
 	return c, nil
+}
+
+// checkWeb проверяет настройку веба до старта: ошибка здесь дешевле, чем
+// неработающий вход, в котором виноватым выглядит бот.
+func (c *Config) checkWeb() error {
+	if !c.WebEnabled() {
+		return nil
+	}
+
+	// Адрес без схемы Telegram не сделает ссылкой, и вход не заработает —
+	// поэтому и неразбираемый адрес, и адрес без схемы дают одну подсказку.
+	u, err := url.Parse(c.WebBaseURL)
+	if err != nil {
+		return fmt.Errorf("WEB_BASE_URL должен начинаться с http:// или https:// (%w)", err)
+	}
+	if scheme := strings.ToLower(u.Scheme); scheme != "http" && scheme != "https" {
+		return errors.New("WEB_BASE_URL должен начинаться с http:// или https://")
+	}
+	if u.Host == "" {
+		return errors.New("WEB_BASE_URL: не разобрать адрес")
+	}
+	if !strings.EqualFold(u.Scheme, "https") && !c.WebInsecureCookies {
+		// Без TLS браузер выбросит cookie с флагом Secure, и вход будет
+		// молча не работать. Пусть это будет осознанным выбором.
+		return errors.New("WEB_BASE_URL без https требует WEB_INSECURE_COOKIES=1")
+	}
+	return nil
 }
 
 // LoadDatabaseURL достаёт только строку подключения: миграциям остальной конфиг

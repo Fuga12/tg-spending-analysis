@@ -113,7 +113,7 @@ func main() {
 	// работает как работал (webapp.md §3).
 	var webSrv *web.Server
 	if cfg.WebEnabled() {
-		webSrv, err = web.New(cfg, store, log)
+		webSrv, err = web.New(cfg, log)
 		if err != nil {
 			log.Error("веб", "err", err)
 			os.Exit(1)

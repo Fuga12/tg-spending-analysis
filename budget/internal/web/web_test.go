@@ -31,7 +31,7 @@ func testServer(t *testing.T) (*Server, string) {
 	addr := freePort(t)
 	cfg := &config.Config{WebAddr: addr, WebBaseURL: "http://" + addr, WebInsecureCookies: true}
 
-	s, err := New(cfg, nil, quietLog())
+	s, err := New(cfg, quietLog())
 	if err != nil {
 		t.Fatalf("сервер: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestBusyPortIsStartupError(t *testing.T) {
 	defer ln.Close()
 
 	cfg := &config.Config{WebAddr: ln.Addr().String(), WebBaseURL: "http://x", WebInsecureCookies: true}
-	s, err := New(cfg, nil, quietLog())
+	s, err := New(cfg, quietLog())
 	if err != nil {
 		t.Fatalf("сервер: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestPanicDoesNotKillServer(t *testing.T) {
 	// Паника в обработчике не должна ронять процесс вместе с ботом.
 	addr := freePort(t)
 	cfg := &config.Config{WebAddr: addr, WebBaseURL: "http://" + addr, WebInsecureCookies: true}
-	s, err := New(cfg, nil, quietLog())
+	s, err := New(cfg, quietLog())
 	if err != nil {
 		t.Fatalf("сервер: %v", err)
 	}
@@ -162,4 +162,93 @@ func TestPanicDoesNotKillServer(t *testing.T) {
 		t.Fatalf("сервер умер после паники: %v", err)
 	}
 	after.Body.Close()
+}
+
+func TestUnknownAPIReturnsJSON(t *testing.T) {
+	// Фронт разбирает тело как JSON — текстовая 404 сломала бы разбор.
+	_, base := testServer(t)
+
+	resp, err := http.Get(base + "/api/unknown")
+	if err != nil {
+		t.Fatalf("запрос: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("код = %d, ожидался 404", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, ожидался JSON", ct)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `"error"`) {
+		t.Errorf("тело = %q", body)
+	}
+}
+
+func TestStaticCachingHeaders(t *testing.T) {
+	// У файлов из embed.FS нулевое время изменения, поэтому без ETag браузер
+	// качал бы бандл заново при каждом открытии страницы.
+	_, base := testServer(t)
+
+	resp, err := http.Get(base + "/")
+	if err != nil {
+		t.Fatalf("запрос: %v", err)
+	}
+	resp.Body.Close()
+
+	tag := resp.Header.Get("ETag")
+	if tag == "" {
+		t.Fatal("ETag не проставлен")
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("Cache-Control = %q, index.html кэшировать нельзя", cc)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, base+"/", nil)
+	req.Header.Set("If-None-Match", tag)
+	again, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("повторный запрос: %v", err)
+	}
+	defer again.Body.Close()
+	if again.StatusCode != http.StatusNotModified {
+		t.Errorf("код = %d, при совпавшем ETag ожидался 304", again.StatusCode)
+	}
+}
+
+func TestPanicAfterPartialResponse(t *testing.T) {
+	// Ответ уже пошёл клиенту — дописывать в него JSON-ошибку поздно.
+	addr := freePort(t)
+	cfg := &config.Config{WebAddr: addr, WebBaseURL: "http://" + addr, WebInsecureCookies: true}
+	s, err := New(cfg, quietLog())
+	if err != nil {
+		t.Fatalf("сервер: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/health", s.health)
+	mux.HandleFunc("GET /half", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"items":[`))
+		panic("на середине ответа")
+	})
+	s.http.Handler = s.logRequest(s.recoverPanic(mux))
+
+	if err := s.Start(); err != nil {
+		t.Fatalf("старт: %v", err)
+	}
+	t.Cleanup(s.Shutdown)
+	waitReady(t, "http://"+addr+"/api/health")
+
+	resp, err := http.Get("http://" + addr + "/half")
+	if err != nil {
+		t.Fatalf("запрос: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), "что-то сломалось") {
+		t.Errorf("к начатому ответу дописана ошибка: %q", body)
+	}
 }

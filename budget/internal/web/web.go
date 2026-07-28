@@ -7,6 +7,8 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,10 +16,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"budget/internal/config"
-	"budget/internal/storage"
 )
 
 // Таймауты запросов. Веб не должен мешать боту записывать траты, поэтому
@@ -31,28 +33,38 @@ const (
 
 // Server — HTTP-интерфейс. Слушает адрес из WEB_ADDR.
 type Server struct {
-	cfg   *config.Config
-	store *storage.Store
-	log   *slog.Logger
-	http  *http.Server
+	cfg  *config.Config
+	log  *slog.Logger
+	http *http.Server
 }
 
 // New собирает сервер. Ошибка означает, что запускаться нельзя.
-func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, error) {
+func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	static, err := staticFS()
 	if err != nil {
 		return nil, err
 	}
+	tags, err := etags(static)
+	if err != nil {
+		return nil, err
+	}
 
-	s := &Server{cfg: cfg, store: store, log: log}
+	s := &Server{cfg: cfg, log: log}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
-	mux.Handle("GET /", http.FileServer(http.FS(static)))
+	// Неизвестный /api/* обязан отвечать JSON-ошибкой, иначе фронт получит
+	// текстовую страницу вместо {"error": ...} (webapp.md §4).
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, "нет такого метода")
+	})
+	// Без метода в шаблоне: «GET /» конфликтует с «/api/» — ServeMux
+	// считает такую пару неоднозначной и паникует при регистрации.
+	mux.Handle("/", cacheStatic(tags, http.FileServer(http.FS(static))))
 
 	s.http = &http.Server{
 		Addr:         cfg.WebAddr,
-		Handler:      s.recoverPanic(s.logRequest(mux)),
+		Handler:      s.logRequest(s.recoverPanic(mux)),
 		ReadTimeout:  readTimeout,
 		WriteTimeout: writeTimeout,
 		IdleTimeout:  idleTimeout,
@@ -95,15 +107,30 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 func (s *Server) recoverPanic(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
-			if rec := recover(); rec != nil {
-				s.log.Error("паника в обработчике", "panic", rec, "path", r.URL.Path)
-				writeError(w, http.StatusInternalServerError, "что-то сломалось")
+			rec := recover()
+			if rec == nil {
+				return
 			}
+			// Служебная паника net/http: обработчик просит тихо оборвать
+			// соединение, это не ошибка и не наше дело.
+			if rec == http.ErrAbortHandler {
+				panic(rec)
+			}
+			s.log.Error("паника в обработчике", "panic", rec, "path", r.URL.Path)
+
+			// Если ответ уже пошёл клиенту, дописывать в него JSON-ошибку
+			// поздно: получится склейка из половины ответа и половины ошибки.
+			if sr, ok := w.(*statusRecorder); ok && sr.wrote {
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "что-то сломалось")
 		}()
 		next.ServeHTTP(w, r)
 	})
 }
 
+// logRequest стоит снаружи recoverPanic: иначе паникнувшие запросы —
+// самые интересные — в лог запросов не попадают вовсе.
 func (s *Server) logRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -116,14 +143,25 @@ func (s *Server) logRequest(next http.Handler) http.Handler {
 	})
 }
 
+// statusRecorder помнит код ответа и то, начали ли мы уже отвечать.
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
+	wrote  bool
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
+	if r.wrote {
+		return
+	}
 	r.status = code
+	r.wrote = true
 	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	r.wrote = true
+	return r.ResponseWriter.Write(b)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -136,6 +174,47 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+// etags считает ETag каждого файла статики один раз при старте: у файлов из
+// embed.FS нулевое время изменения, поэтому без этого браузер перекачивал бы
+// бандл на каждое открытие страницы.
+func etags(static fs.FS) (map[string]string, error) {
+	tags := map[string]string{}
+
+	err := fs.WalkDir(static, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := fs.ReadFile(static, path)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(data)
+		tags["/"+path] = `"` + hex.EncodeToString(sum[:16]) + `"`
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("хэши статики: %w", err)
+	}
+	tags["/"] = tags["/index.html"]
+	return tags, nil
+}
+
+// cacheStatic проставляет ETag и правила кэширования. Файлы с хэшем в имени
+// (их выдаёт Vite) можно кэшировать вечно, index.html — нельзя никогда.
+func cacheStatic(tags map[string]string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tag, ok := tags[r.URL.Path]; ok {
+			w.Header().Set("ETag", tag)
+		}
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // staticFS отдаёт собранный фронт из бинаря.
