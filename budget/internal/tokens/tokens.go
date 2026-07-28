@@ -32,6 +32,23 @@ func Extract(s string) []decimal.Decimal {
 	return out
 }
 
+// Strip убирает из текста сами суммы вместе с валютными хвостами. Нужен для
+// описания траты: «600 лимонад» → «лимонад».
+func Strip(s string) string {
+	r := []rune(s)
+	found := find(s)
+	var b strings.Builder
+	prev := 0
+	for _, m := range found {
+		b.WriteString(string(r[prev:m.Start]))
+		b.WriteRune(' ')
+		prev = m.End
+	}
+	b.WriteString(string(r[prev:]))
+	// Пробелы схлопываются: на месте вырезанных сумм иначе остаются дыры.
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
 func find(s string) []match {
 	r := []rune(s)
 	var out []match
