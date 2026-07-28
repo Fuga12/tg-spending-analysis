@@ -1,5 +1,13 @@
 import { useState } from "react";
-import { api, Category } from "./api";
+import { api, Beneficiary, Category } from "./api";
+
+const DEFAULTS = [
+  { value: "payer", label: "мне" },
+  { value: "partner", label: "ей" },
+  { value: "both", label: "на двоих" },
+] as const;
+
+const defaultLabel = (b: string) => DEFAULTS.find((d) => d.value === b)?.label ?? "на двоих";
 
 /**
  * Правка категорий. Названия и подсказки уходят прямо в JSON-схему запроса
@@ -28,6 +36,8 @@ export default function Categories({
         <h2 className="sheet__title">Категории</h2>
         <p className="sheet__hint">
           Подсказка уходит в запрос к модели — по ней она решает, куда отнести трату.
+          «По умолчанию» побеждает догадку модели: если в сообщении не сказано,
+          на кого потрачено, берётся оно.
         </p>
 
         {editing || creating ? (
@@ -48,7 +58,10 @@ export default function Categories({
             <div className="cats">
               {categories.map((c) => (
                 <button key={c.id} className="cats__row" onClick={() => setEditing(c)}>
-                  <span className="cats__name">{c.name}</span>
+                  <span className="cats__name">
+                    {c.name}
+                    <span className="cats__default">{defaultLabel(c.beneficiary)}</span>
+                  </span>
                   <span className="cats__hint">{c.hint || "без подсказки"}</span>
                 </button>
               ))}
@@ -74,6 +87,7 @@ function CategoryForm({
 }) {
   const [name, setName] = useState(category?.name ?? "");
   const [hint, setHint] = useState(category?.hint ?? "");
+  const [beneficiary, setBeneficiary] = useState<Beneficiary>(category?.beneficiary ?? "both");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -82,9 +96,9 @@ function CategoryForm({
     setError(null);
     try {
       const saved = category
-        ? await api.patchCategory(category.id, { name, hint })
-        : await api.createCategory({ name, hint, beneficiary: "both" });
-      onSaved({ ...(category ?? { beneficiary: "both" }), ...saved } as Category);
+        ? await api.patchCategory(category.id, { name, hint, beneficiary })
+        : await api.createCategory({ name, hint, beneficiary });
+      onSaved({ ...(category ?? {}), ...saved } as Category);
     } catch (err) {
       setError(err instanceof Error ? err.message : "не сохранилось");
       setBusy(false);
@@ -107,6 +121,21 @@ function CategoryForm({
           onChange={(e) => setHint(e.target.value)}
         />
       </div>
+      <div className="field">
+        <div className="field__label">По умолчанию потрачено</div>
+        <div className="segmented">
+          {DEFAULTS.map((d) => (
+            <button
+              key={d.value}
+              className={`segmented__item${beneficiary === d.value ? " segmented__item--on" : ""}`}
+              onClick={() => setBeneficiary(d.value)}
+            >
+              {d.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {error && <div className="sheet__error">{error}</div>}
       <button className="btn" onClick={() => void save()} disabled={busy || !name.trim()}>
         {busy ? "Сохраняю…" : "Сохранить"}

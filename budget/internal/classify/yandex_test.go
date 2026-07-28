@@ -133,8 +133,8 @@ func TestYandexRequestShape(t *testing.T) {
 	if got.ResponseFormat.Type != "json_schema" {
 		t.Errorf("response_format.type = %q", got.ResponseFormat.Type)
 	}
-	if n := len(got.ResponseFormat.JSONSchema.Schema.Properties.Items.Items.Required); n != 6 {
-		t.Errorf("обязательных полей в схеме %d, ожидалось 6", n)
+	if n := len(got.ResponseFormat.JSONSchema.Schema.Properties.Items.Items.Required); n != 7 {
+		t.Errorf("обязательных полей в схеме %d, ожидалось 7", n)
 	}
 }
 

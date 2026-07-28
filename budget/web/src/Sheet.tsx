@@ -234,7 +234,13 @@ export default function Sheet({ tx, categories, defaultDay, today, partnerName, 
                   key={c.id}
                   className={`chip${categoryID === c.id ? " chip--on" : ""}`}
                   disabled={readOnly}
-                  onClick={() => setCategoryID(categoryID === c.id ? null : c.id)}
+                  onClick={() => {
+                    const next = categoryID === c.id ? null : c.id;
+                    setCategoryID(next);
+                    // Умолчание категории подставляем только новой записи:
+                    // у существующей бенефициар уже выбран человеком.
+                    if (next !== null && !tx) setBeneficiary(c.beneficiary);
+                  }}
                 >
                   {c.name}
                 </button>

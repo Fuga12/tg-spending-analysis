@@ -1054,8 +1054,20 @@ button {
 }
 
 .cats__name {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   font-size: 16px;
   font-weight: 500;
+}
+
+.cats__default {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-muted);
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
 }
 
 .cats__hint {

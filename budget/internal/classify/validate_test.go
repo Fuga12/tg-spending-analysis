@@ -111,6 +111,7 @@ func TestValidateClampsDaysAgo(t *testing.T) {
 }
 
 func TestValidateBadEnumsFallBack(t *testing.T) {
+	// Мусор в beneficiary заменяется умолчанием категории — у Продуктов both.
 	items := Validate(
 		[]RawItem{raw("600", "лимонад", "Продукты", "нам обоим", "покупка", 0)},
 		"600 лимонад", testCategories(), quietLog())
@@ -118,11 +119,20 @@ func TestValidateBadEnumsFallBack(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("ожидался один элемент, получено %d", len(items))
 	}
-	if items[0].Beneficiary != BenPayer {
-		t.Errorf("beneficiary = %q, ожидался payer", items[0].Beneficiary)
+	if items[0].Beneficiary != BenBoth {
+		t.Errorf("beneficiary = %q, ожидалось умолчание Продуктов", items[0].Beneficiary)
 	}
 	if items[0].Kind != KindExpense {
 		t.Errorf("kind = %q, ожидался expense", items[0].Kind)
+	}
+
+	// А если у категории умолчания нет — безопасное «на себя».
+	noDefault := []storage.Category{{ID: 1, Name: "Продукты"}, {ID: 3, Name: "Прочее"}}
+	items = Validate(
+		[]RawItem{raw("600", "лимонад", "Продукты", "нам обоим", KindExpense, 0)},
+		"600 лимонад", noDefault, quietLog())
+	if items[0].Beneficiary != BenPayer {
+		t.Errorf("beneficiary = %q, без умолчания ожидался payer", items[0].Beneficiary)
 	}
 }
 
@@ -169,5 +179,31 @@ func TestValidateLongDescriptionTrimmed(t *testing.T) {
 	}
 	if n := len([]rune(items[0].Description)); n > 64 {
 		t.Errorf("описание длиной %d символов, максимум 64", n)
+	}
+}
+
+func TestCategoryDefaultBeatsModelGuess(t *testing.T) {
+	// Про получателя в сообщении не сказано — берём умолчание категории,
+	// а не догадку модели: свои привычки люди знают лучше.
+	item := raw("600", "лимонад", "Продукты", BenPayer, KindExpense, 0)
+	item.BeneficiaryStated = false
+
+	items := Validate([]RawItem{item}, "600 лимонад", testCategories(), quietLog())
+	if len(items) != 1 {
+		t.Fatalf("ожидался один элемент, получено %d", len(items))
+	}
+	if items[0].Beneficiary != BenBoth {
+		t.Errorf("beneficiary = %q, у Продуктов умолчание both", items[0].Beneficiary)
+	}
+}
+
+func TestStatedBeneficiaryWins(t *testing.T) {
+	// А если сказано прямо — умолчание не вмешивается.
+	item := raw("2500", "цветы", "Продукты", BenPartner, KindExpense, 0)
+	item.BeneficiaryStated = true
+
+	items := Validate([]RawItem{item}, "купил ей цветы 2500", testCategories(), quietLog())
+	if items[0].Beneficiary != BenPartner {
+		t.Errorf("beneficiary = %q, в сообщении сказано «ей»", items[0].Beneficiary)
 	}
 }

@@ -10,7 +10,9 @@ export class Conflict extends Error {
   }
 }
 
-export type Category = { id: number; name: string; beneficiary: string; hint: string };
+export type Beneficiary = "payer" | "partner" | "both";
+
+export type Category = { id: number; name: string; beneficiary: Beneficiary; hint: string };
 
 export type Me = {
   id: number;
@@ -104,7 +106,7 @@ export const api = {
 
   categories: () => get<Category[]>("/api/categories"),
 
-  patchCategory: (id: number, body: { name: string; hint: string }) =>
+  patchCategory: (id: number, body: { name: string; hint: string; beneficiary: string }) =>
     send<Category>("PATCH", `/api/categories/${id}`, body),
 
   createCategory: (body: { name: string; hint: string; beneficiary: string }) =>

@@ -24,6 +24,11 @@ type RawItem struct {
 	Beneficiary string      `json:"beneficiary"`
 	Kind        string      `json:"kind"`
 	DaysAgo     int         `json:"days_ago"`
+
+	// BeneficiaryStated — сказано ли в сообщении, на кого потрачено, прямым
+	// текстом. Если нет, беневициара даёт не модель, а умолчание категории:
+	// свои привычки люди знают лучше (см. validate.go).
+	BeneficiaryStated bool `json:"beneficiary_stated"`
 }
 
 // UsageRecorder — куда писать расход токенов. После каждого вызова,
@@ -276,6 +281,12 @@ func responseFormat(cats []storage.Category) map[string]any {
 									"description": "На кого потрачено",
 									"enum":        []string{BenPayer, BenPartner, BenBoth},
 								},
+								"beneficiary_stated": map[string]any{
+									"type": "boolean",
+									"description": "true, только если в сообщении прямо сказано, " +
+										"на кого потрачено («ей», «себе», «нам»). " +
+										"Если это твоя догадка по смыслу — false",
+								},
 								"kind": map[string]any{
 									"type":        "string",
 									"description": "Тип операции",
@@ -286,7 +297,10 @@ func responseFormat(cats []storage.Category) map[string]any {
 									"description": "Сколько дней назад произошла трата, 0 = сегодня",
 								},
 							},
-							"required": []string{"amount", "description", "category", "beneficiary", "kind", "days_ago"},
+							"required": []string{
+								"amount", "description", "category", "beneficiary",
+								"beneficiary_stated", "kind", "days_ago",
+							},
 						},
 					},
 				},
@@ -305,35 +319,36 @@ const systemPrompt = `Ты разбираешь короткие сообщен�
 - Одно сообщение может содержать несколько трат — верни их отдельными элементами массива items.
 - amount — число ровно так, как записано в сообщении. Не пересчитывай его и не меняй разрядность. «к» означает тысячи: «5к» это 5000.
 - description — 1-3 слова по сути траты, без суммы и без указания, кому она.
-- beneficiary: payer — потрачено на автора сообщения, partner — на его партнёра, both — на обоих. Если явно не сказано, реши по смыслу категории.
+- beneficiary: payer — потрачено на автора сообщения, partner — на его партнёра, both — на обоих.
+- beneficiary_stated: true, только если про получателя сказано прямо — «ей», «себе», «нам», «для неё». Догадка по смыслу — это false.
 - kind: transfer — автор передал деньги партнёру, а не купил что-то. income — поступление денег. В остальных случаях expense.
 - days_ago: 0, если про день ничего не сказано; 1 для «вчера»; 2 для «позавчера».
 
 Примеры разбора:
 
 "600 лимонад"
-{"items":[{"amount":600,"description":"лимонад","category":"Продукты","beneficiary":"both","kind":"expense","days_ago":0}]}
+{"items":[{"amount":600,"description":"лимонад","category":"Продукты","beneficiary":"both","beneficiary_stated":false,"kind":"expense","days_ago":0}]}
 
 "такси 450 домой"
-{"items":[{"amount":450,"description":"такси","category":"Такси","beneficiary":"payer","kind":"expense","days_ago":0}]}
+{"items":[{"amount":450,"description":"такси","category":"Такси","beneficiary":"payer","beneficiary_stated":false,"kind":"expense","days_ago":0}]}
 
 "купил ей цветы 2500"
-{"items":[{"amount":2500,"description":"цветы","category":"Подарки","beneficiary":"partner","kind":"expense","days_ago":0}]}
+{"items":[{"amount":2500,"description":"цветы","category":"Подарки","beneficiary":"partner","beneficiary_stated":true,"kind":"expense","days_ago":0}]}
 
 "вчера взял в пятёрочке на 1200 и такси 400 домой"
-{"items":[{"amount":1200,"description":"пятёрочка","category":"Продукты","beneficiary":"both","kind":"expense","days_ago":1},{"amount":400,"description":"такси","category":"Такси","beneficiary":"payer","kind":"expense","days_ago":1}]}
+{"items":[{"amount":1200,"description":"пятёрочка","category":"Продукты","beneficiary":"both","beneficiary_stated":false,"kind":"expense","days_ago":1},{"amount":400,"description":"такси","category":"Такси","beneficiary":"payer","beneficiary_stated":false,"kind":"expense","days_ago":1}]}
 
 "позавчера аптека 780"
-{"items":[{"amount":780,"description":"аптека","category":"Здоровье","beneficiary":"payer","kind":"expense","days_ago":2}]}
+{"items":[{"amount":780,"description":"аптека","category":"Здоровье","beneficiary":"payer","beneficiary_stated":false,"kind":"expense","days_ago":2}]}
 
 "скинул ей 5к"
-{"items":[{"amount":5000,"description":"перевод","category":"Прочее","beneficiary":"partner","kind":"transfer","days_ago":0}]}
+{"items":[{"amount":5000,"description":"перевод","category":"Прочее","beneficiary":"partner","beneficiary_stated":true,"kind":"transfer","days_ago":0}]}
 
 "зарплата 90000"
-{"items":[{"amount":90000,"description":"зарплата","category":"Прочее","beneficiary":"payer","kind":"income","days_ago":0}]}
+{"items":[{"amount":90000,"description":"зарплата","category":"Прочее","beneficiary":"payer","beneficiary_stated":false,"kind":"income","days_ago":0}]}
 
 "жкх 4300 и интернет 700"
-{"items":[{"amount":4300,"description":"жкх","category":"Коммуналка","beneficiary":"both","kind":"expense","days_ago":0},{"amount":700,"description":"интернет","category":"Связь и интернет","beneficiary":"payer","kind":"expense","days_ago":0}]}
+{"items":[{"amount":4300,"description":"жкх","category":"Коммуналка","beneficiary":"both","beneficiary_stated":false,"kind":"expense","days_ago":0},{"amount":700,"description":"интернет","category":"Связь и интернет","beneficiary":"payer","beneficiary_stated":false,"kind":"expense","days_ago":0}]}
 
 Отвечай только JSON по схеме, без пояснений.`
 

@@ -112,9 +112,10 @@ func (s *Store) UpsertWord(ctx context.Context, userID int64, word string, categ
 
 // UpdateCategory правит имя и подсказку. Добавлять и удалять категории
 // нельзя: их ровно четырнадцать (plan.md §14), а список уходит в enum схемы.
-func (s *Store) UpdateCategory(ctx context.Context, id int32, name, hint string) (bool, error) {
+func (s *Store) UpdateCategory(ctx context.Context, id int32, name, hint, beneficiary string) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
-		update categories set name = $2, hint = $3 where id = $1`, id, name, hint)
+		update categories set name = $2, hint = $3, default_beneficiary = $4
+		where id = $1`, id, name, hint, beneficiary)
 	if err != nil {
 		return false, err
 	}

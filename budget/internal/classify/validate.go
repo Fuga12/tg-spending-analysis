@@ -59,6 +59,14 @@ func Validate(raw []RawItem, text string, cats []storage.Category, log *slog.Log
 		if !isBeneficiary(item.Beneficiary) {
 			item.Beneficiary = BenPayer
 		}
+
+		// Если в сообщении про получателя не сказано, беневициара даёт не
+		// догадка модели, а умолчание категории: «Такси — на себя», «Продукты —
+		// на двоих» настраивается людьми под свои привычки и не меняется от
+		// формулировки к формулировке.
+		if !r.BeneficiaryStated && cat != nil && isBeneficiary(cat.DefaultBeneficiary) {
+			item.Beneficiary = cat.DefaultBeneficiary
+		}
 		if !isKind(item.Kind) {
 			item.Kind = KindExpense
 		}

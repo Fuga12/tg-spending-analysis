@@ -466,7 +466,17 @@ func (s *Server) handleCategoryPatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	updated, err := s.store.UpdateCategory(r.Context(), int32(id), name, hint)
+	beneficiary := body.Beneficiary
+	if !isBeneficiary(beneficiary) {
+		// Не прислали — оставляем как было.
+		for _, c := range cats {
+			if c.ID == int32(id) {
+				beneficiary = c.DefaultBeneficiary
+			}
+		}
+	}
+
+	updated, err := s.store.UpdateCategory(r.Context(), int32(id), name, hint, beneficiary)
 	if err != nil {
 		s.log.Error("правка категории", "err", err, "id", id)
 		writeError(w, http.StatusInternalServerError, "база не отвечает")
@@ -476,8 +486,10 @@ func (s *Server) handleCategoryPatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "нет такой категории")
 		return
 	}
-	s.log.Info("категория изменена", "id", id, "name", name)
-	writeJSON(w, http.StatusOK, categoryView{ID: int32(id), Name: name, Hint: hint})
+	s.log.Info("категория изменена", "id", id, "name", name, "по умолчанию", beneficiary)
+	writeJSON(w, http.StatusOK, categoryView{
+		ID: int32(id), Name: name, Hint: hint, Beneficiary: beneficiary,
+	})
 }
 
 // trimTo обрезает строку до n символов, не разрывая руны.
