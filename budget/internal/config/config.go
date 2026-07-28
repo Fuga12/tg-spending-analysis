@@ -26,7 +26,16 @@ type Config struct {
 	LLMMonthlyTokenBudget int64
 	LLMPricePer1KRub      float64
 	LLMBreakerCooldown    time.Duration
+
+	// Веб-интерфейс (webapp.md). Пустой WebBaseURL означает «веба нет»:
+	// сервер не поднимается, бот работает как работал.
+	WebAddr            string
+	WebBaseURL         string
+	WebInsecureCookies bool
 }
+
+// WebEnabled — настроен ли веб-интерфейс.
+func (c *Config) WebEnabled() bool { return c.WebBaseURL != "" }
 
 // OwnerID — первый id из whitelist, ему уходят служебные уведомления (§7).
 func (c *Config) OwnerID() int64 {
@@ -60,6 +69,8 @@ func Load() (*Config, error) {
 		LLMBaseURL:     envDefault("LLM_BASE_URL", "https://ai.api.cloud.yandex.net/v1"),
 		LLMModel:       envDefault("LLM_MODEL", "yandexgpt/rc"),
 		ReminderAt:     envDefault("REMINDER_AT", "21:00"),
+		WebAddr:        envDefault("WEB_ADDR", "127.0.0.1:8081"),
+		WebBaseURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("WEB_BASE_URL")), "/"),
 	}
 
 	var missing []string
@@ -108,6 +119,13 @@ func Load() (*Config, error) {
 	}
 	if c.LLMPricePer1KRub, err = envFloat("LLM_PRICE_PER_1K_RUB", 1.0); err != nil {
 		return nil, err
+	}
+
+	c.WebInsecureCookies = envBool("WEB_INSECURE_COOKIES")
+	if c.WebEnabled() && !strings.HasPrefix(c.WebBaseURL, "https://") && !c.WebInsecureCookies {
+		// Без TLS браузер выбросит cookie с флагом Secure, и вход будет
+		// молча не работать. Пусть это будет осознанным выбором.
+		return nil, errors.New("WEB_BASE_URL без https требует WEB_INSECURE_COOKIES=1")
 	}
 
 	return c, nil
@@ -242,4 +260,13 @@ func loadDotEnv(path string) {
 			_ = os.Setenv(key, val)
 		}
 	}
+}
+
+// envBool — «1», «true», «yes» означают да, всё остальное нет.
+func envBool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "да":
+		return true
+	}
+	return false
 }

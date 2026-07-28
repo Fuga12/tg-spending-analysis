@@ -14,6 +14,7 @@ import (
 	"budget/internal/config"
 	"budget/internal/reminder"
 	"budget/internal/storage"
+	"budget/internal/web"
 	"budget/internal/worker"
 )
 
@@ -108,6 +109,23 @@ func main() {
 	backfillDone := make(chan struct{})
 	go backfill.Run(ctx, backfillPeriod, backfillDone)
 
+	// Веб поднимается, только если задан WEB_BASE_URL. Не задан — бот
+	// работает как работал (webapp.md §3).
+	var webSrv *web.Server
+	if cfg.WebEnabled() {
+		webSrv, err = web.New(cfg, store, log)
+		if err != nil {
+			log.Error("веб", "err", err)
+			os.Exit(1)
+		}
+		if err := webSrv.Start(); err != nil {
+			log.Error("веб", "err", err)
+			os.Exit(1)
+		}
+	} else {
+		log.Info("веб выключен: WEB_BASE_URL не задан")
+	}
+
 	rem := reminder.New(cfg, store, b, log)
 	if err := rem.Start(); err != nil {
 		log.Error("напоминание", "err", err)
@@ -117,6 +135,9 @@ func main() {
 	go func() {
 		<-ctx.Done()
 		log.Info("останавливаюсь, доделываю начатое")
+		if webSrv != nil {
+			webSrv.Shutdown()
+		}
 		rem.Stop()
 		b.Shutdown(shutdownTimeout)
 	}()
