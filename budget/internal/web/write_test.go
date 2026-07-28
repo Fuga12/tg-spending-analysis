@@ -271,3 +271,176 @@ func TestBadPathRejected(t *testing.T) {
 		t.Errorf("код = %d, ожидался 404", resp.StatusCode)
 	}
 }
+
+func TestSecondEditWorks(t *testing.T) {
+	// Версия уходит клиенту с той же точностью, с какой сверяется. Иначе
+	// вторая правка записи вечно отвечает 409, и сохранить нельзя ничего.
+	store, base, client := loggedIn(t)
+	id := addTx(t, store, testUserID, "600", "тест", classify.KindExpense, time.Now(), nil)
+	url := base + "/api/transactions/" + itoa(int(id))
+
+	resp, body := send(t, client, http.MethodPatch, url, map[string]any{"amount": "700"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("первая правка: код %d, тело %s", resp.StatusCode, body)
+	}
+	var first txView
+	_ = json.Unmarshal(body, &first)
+
+	resp, body = send(t, client, http.MethodPatch, url,
+		map[string]any{"amount": "800", "updated_at": *first.UpdatedAt})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("вторая правка: код %d, тело %s — версия не совпала сама с собой", resp.StatusCode, body)
+	}
+
+	var second txView
+	_ = json.Unmarshal(body, &second)
+	if second.Amount != "800" {
+		t.Errorf("сумма = %s, ожидалось 800", second.Amount)
+	}
+}
+
+func TestRestoreWorksAfterEdit(t *testing.T) {
+	// «Вернуть» из тоста не может нести версию — и не должна её требовать.
+	store, base, client := loggedIn(t)
+	id := addTx(t, store, testUserID, "600", "тест", classify.KindExpense, time.Now(), nil)
+	url := base + "/api/transactions/" + itoa(int(id))
+
+	send(t, client, http.MethodPatch, url, map[string]any{"amount": "700"})
+	send(t, client, http.MethodDelete, url, nil)
+
+	resp, body := send(t, client, http.MethodPatch, url, map[string]any{"deleted": false})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("возврат правленой записи: код %d, тело %s", resp.StatusCode, body)
+	}
+	if _, err := store.Transaction(context.Background(), id); err != nil {
+		t.Errorf("запись не вернулась: %v", err)
+	}
+}
+
+func TestHugeAmountRejectedFast(t *testing.T) {
+	// «1e2000000000» decimal разворачивает в гигабайты и кладёт процесс.
+	_, base, client := loggedIn(t)
+
+	done := make(chan int, 1)
+	go func() {
+		resp, _ := send(t, client, http.MethodPost, base+"/api/transactions",
+			map[string]any{"amount": "1e2000000000", "description": "бомба", "spent_at": ""})
+		done <- resp.StatusCode
+	}()
+
+	select {
+	case code := <-done:
+		if code != http.StatusBadRequest {
+			t.Errorf("код = %d, ожидался 400", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("запрос не ответил за три секунды — сумма ушла в разбор")
+	}
+}
+
+func TestAmountEdgeCases(t *testing.T) {
+	store, base, client := loggedIn(t)
+	id := addTx(t, store, testUserID, "600", "тест", classify.KindExpense, time.Now(), nil)
+	url := base + "/api/transactions/" + itoa(int(id))
+
+	// Меньше полкопейки — это не сумма, и отвечать надо внятно, а не 500.
+	resp, _ := send(t, client, http.MethodPatch, url, map[string]any{"amount": "0.004"})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("0.004 дало код %d, ожидался 400", resp.StatusCode)
+	}
+}
+
+func TestEditingSumDoesNotTeachDictionary(t *testing.T) {
+	// Словарь учится на смене категории, а не на правке суммы: ручная
+	// привязка не перезатирается ничем, мусор в ней остаётся навсегда.
+	store, base, client := loggedIn(t)
+
+	cats, _ := store.Categories(context.Background())
+	food := cats[0].ID
+	if _, err := store.Pool().Exec(context.Background(),
+		`delete from word_map where user_id = $1`, testUserID); err != nil {
+		t.Fatalf("очистка словаря: %v", err)
+	}
+
+	id := addTx(t, store, testUserID, "600", "лимонад", classify.KindExpense, time.Now(), &food)
+	send(t, client, http.MethodPatch, base+"/api/transactions/"+itoa(int(id)),
+		map[string]any{"amount": "700"})
+
+	hits, _ := store.LookupWords(context.Background(), testUserID, []string{"лимонад"})
+	if _, ok := hits["лимонад"]; ok {
+		t.Error("правка суммы не должна прибивать слово к категории навсегда")
+	}
+}
+
+func TestBlindlyClassifiedDoesNotTeachDictionary(t *testing.T) {
+	// У записи, разобранной вслепую, описание — это весь текст сообщения.
+	// Учить по нему словарь нельзя ни из бота, ни с сайта.
+	store, base, client := loggedIn(t)
+
+	cats, _ := store.Categories(context.Background())
+	var taxi, other int32
+	for _, c := range cats {
+		switch c.Name {
+		case "Такси":
+			taxi = c.ID
+		case classify.CategoryOther:
+			other = c.ID
+		}
+	}
+	if _, err := store.Pool().Exec(context.Background(),
+		`delete from word_map where user_id = $1`, testUserID); err != nil {
+		t.Fatalf("очистка словаря: %v", err)
+	}
+
+	id, err := store.InsertTransaction(context.Background(), storage.Transaction{
+		PayerID: testUserID, Beneficiary: classify.BenPayer, Kind: classify.KindExpense,
+		Amount: decimal.RequireFromString("600"), Description: "взял в дьюти фри",
+		RawText: "взял в дьюти фри 600", NeedsClassification: true, SpentAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
+	if _, err := store.MarkForReview(context.Background(), id, other); err != nil {
+		t.Fatalf("пометка: %v", err)
+	}
+
+	send(t, client, http.MethodPatch, base+"/api/transactions/"+itoa(int(id)),
+		map[string]any{"category_id": taxi})
+
+	hits, _ := store.LookupWords(context.Background(), testUserID, []string{"взял", "дьюти", "фри"})
+	if len(hits) != 0 {
+		t.Errorf("в словарь уехали слова сырого текста: %v", hits)
+	}
+}
+
+func TestClearingCategoryKeepsRecordInQueue(t *testing.T) {
+	// Снятие категории не должно снимать запись с очереди разбора: наоборот,
+	// разобрать её ещё нужно.
+	store, base, client := loggedIn(t)
+
+	id, err := store.InsertTransaction(context.Background(), storage.Transaction{
+		PayerID: testUserID, Beneficiary: classify.BenPayer, Kind: classify.KindExpense,
+		Amount: decimal.RequireFromString("600"), Description: "непонятное",
+		RawText: "600 непонятное", NeedsClassification: true, SpentAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
+
+	send(t, client, http.MethodPatch, base+"/api/transactions/"+itoa(int(id)),
+		map[string]any{"amount": "700", "clear_category": true})
+
+	pending, err := store.PendingClassification(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("очередь: %v", err)
+	}
+	found := false
+	for _, tx := range pending {
+		if tx.ID == id {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("правка суммы сняла запись с очереди разбора — категории теперь не будет никогда")
+	}
+}

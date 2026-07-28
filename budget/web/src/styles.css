@@ -518,8 +518,9 @@ button {
   letter-spacing: -0.02em;
 }
 
-.sheet__amount input:focus {
+.sheet__amount input:focus-visible {
   outline: none;
+  border-bottom: 2px solid var(--slot-1);
 }
 
 .sheet__amount span {

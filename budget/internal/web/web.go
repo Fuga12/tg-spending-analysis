@@ -80,6 +80,9 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 	api.HandleFunc("/api/transactions", methodNotAllowed)
 	api.HandleFunc("/api/report/month", methodNotAllowed)
 	api.HandleFunc("/api/transactions/{id}", methodNotAllowed)
+	api.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusNotFound, "нет такого метода")
+	})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)

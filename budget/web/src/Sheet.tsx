@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, Category, Conflict, Tx } from "./api";
 import { money } from "./format";
 
@@ -17,7 +17,11 @@ const KINDS = [
 type Props = {
   tx: Tx | null; // null — новая запись
   categories: Category[];
+  /** Дата новой записи: сегодня в текущем месяце, иначе первое число открытого. */
   defaultDay: string;
+  /** Сегодняшний день — для чипов «сегодня/вчера» и потолка даты. */
+  today: string;
+  partnerName?: string;
   onClose: () => void;
   onSaved: (tx: Tx) => void;
   onDeleted: (tx: Tx) => void;
@@ -27,7 +31,7 @@ type Props = {
  * Карточка операции: лист снизу на телефоне, модалка на десктопе.
  * Здесь правится сумма и дата — то, чего в боте нет вовсе.
  */
-export default function Sheet({ tx, categories, defaultDay, onClose, onSaved, onDeleted }: Props) {
+export default function Sheet({ tx, categories, defaultDay, today, partnerName, onClose, onSaved, onDeleted }: Props) {
   const [amount, setAmount] = useState(tx?.amount ?? "");
   const [description, setDescription] = useState(tx?.description ?? "");
   const [categoryID, setCategoryID] = useState<number | null>(tx?.category_id ?? null);
@@ -42,20 +46,56 @@ export default function Sheet({ tx, categories, defaultDay, onClose, onSaved, on
   const [confirming, setConfirming] = useState(false);
 
   const readOnly = tx !== null && !tx.mine;
+  // Сутки вперёд сервер разрешает (webapp.md §4): пусть и поле разрешает.
+  const maxDay = shiftDay(today, 1);
   const transfer = kind === "transfer";
 
-  // Esc закрывает, фокус не убегает из листа.
+  const sheetRef = useRef<HTMLDivElement>(null);
+
+  // Esc закрывает, Tab не уходит на список под подложкой, «назад» на
+  // телефоне закрывает лист, а не уводит со страницы.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab" || !sheetRef.current) return;
+
+      const focusable = sheetRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
+
+    const onPop = () => onClose();
+
     document.addEventListener("keydown", onKey);
+    window.addEventListener("popstate", onPop);
     document.body.style.overflow = "hidden";
+    window.history.pushState({ sheet: true }, "");
+
     return () => {
       document.removeEventListener("keydown", onKey);
+      window.removeEventListener("popstate", onPop);
       document.body.style.overflow = "";
+      // Закрыли не кнопкой «назад» — снимаем свою запись из истории.
+      if (window.history.state?.sheet) window.history.back();
     };
   }, [onClose]);
+
+  useEffect(() => {
+    sheetRef.current?.querySelector<HTMLElement>("input, button")?.focus();
+  }, []);
 
   async function save() {
     setBusy(true);
@@ -65,7 +105,9 @@ export default function Sheet({ tx, categories, defaultDay, onClose, onSaved, on
         amount,
         description,
         category_id: transfer ? undefined : categoryID ?? undefined,
-        clear_category: !transfer && categoryID === null,
+        // Снятие категории просим явно и только если она была: иначе правка
+        // суммы у неразобранной записи снимала бы её с очереди воркера.
+        clear_category: !transfer && categoryID === null && tx?.category_id != null,
         beneficiary,
         kind,
         spent_at: day,
@@ -104,7 +146,7 @@ export default function Sheet({ tx, categories, defaultDay, onClose, onSaved, on
   if (conflict) {
     return (
       <Backdrop onClose={onClose}>
-        <div className="sheet">
+        <div className="sheet" role="dialog" aria-modal="true">
           <h2 className="sheet__title">Запись изменилась</h2>
           <p className="sheet__hint">
             Пока ты правил, её поменяли — в боте или воркером. Что оставить?
@@ -150,13 +192,15 @@ export default function Sheet({ tx, categories, defaultDay, onClose, onSaved, on
 
   return (
     <Backdrop onClose={onClose}>
-      <div className="sheet" role="dialog" aria-modal="true">
+      <div className="sheet" role="dialog" aria-modal="true" ref={sheetRef}>
         <div className="sheet__grip" />
         <h2 className="sheet__title">
           {tx ? (transfer ? "Перевод" : kind === "income" ? "Поступление" : "Трата") : "Новая запись"}
         </h2>
 
-        {readOnly && <div className="sheet__badge">Запись партнёра — можно только смотреть</div>}
+        {readOnly && (
+          <div className="sheet__badge">Запись {partnerName ?? "партнёра"} — можно только смотреть</div>
+        )}
 
         <label className="sheet__amount">
           <input
@@ -214,16 +258,16 @@ export default function Sheet({ tx, categories, defaultDay, onClose, onSaved, on
         <Field label="Когда">
           <div className="chips">
             <button
-              className={`chip${day === defaultDay ? " chip--on" : ""}`}
+              className={`chip${day === today ? " chip--on" : ""}`}
               disabled={readOnly}
-              onClick={() => setDay(defaultDay)}
+              onClick={() => setDay(today)}
             >
               сегодня
             </button>
             <button
-              className={`chip${day === shiftDay(defaultDay, -1) ? " chip--on" : ""}`}
+              className={`chip${day === shiftDay(today, -1) ? " chip--on" : ""}`}
               disabled={readOnly}
-              onClick={() => setDay(shiftDay(defaultDay, -1))}
+              onClick={() => setDay(shiftDay(today, -1))}
             >
               вчера
             </button>
@@ -231,7 +275,7 @@ export default function Sheet({ tx, categories, defaultDay, onClose, onSaved, on
               className="input input--date"
               type="date"
               value={day}
-              max={defaultDay}
+              max={maxDay}
               disabled={readOnly}
               onChange={(e) => e.target.value && setDay(e.target.value)}
               aria-label="Дата"

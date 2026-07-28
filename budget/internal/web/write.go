@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -65,11 +66,28 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Возврат удалённой — отдельная операция: версии у клиента нет и быть не
+	// может, а требовать её значит сделать «Вернуть» неработающей кнопкой.
+	if p.Restore && onlyRestore(patch) {
+		tx, err := s.store.RestoreTransaction(r.Context(), id, userID(r))
+		if err != nil {
+			s.writeUpdateError(w, r, id, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.view(tx, userID(r)))
+		return
+	}
+
 	version, err := parseVersion(patch.UpdatedAt)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "не понял версию записи")
 		return
 	}
+
+	// Состояние до правки решает, можно ли учить словарь: у записи,
+	// разобранной вслепую, описание — это весь текст сообщения.
+	before, err := s.store.Transaction(r.Context(), id)
+	learnable := err == nil && !before.NeedsClassification && !before.NeedsReview
 
 	tx, err := s.store.UpdateTransaction(r.Context(), id, userID(r), p, version)
 	if err != nil {
@@ -77,9 +95,18 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ручная правка учит словарь — тем же правилом, что и кнопки бота.
-	classify.RememberManual(r.Context(), s.store, tx, s.log)
+	// Словарь учится только на смене категории или бенефициара — как кнопки
+	// бота. Правка одной суммы прибивать слова к категории не должна.
+	if learnable && (p.CategoryID != nil || p.Beneficiary != nil) {
+		classify.RememberManual(r.Context(), s.store, tx, s.log)
+	}
 	writeJSON(w, http.StatusOK, s.view(tx, userID(r)))
+}
+
+// onlyRestore — в теле нет ничего, кроме «верни удалённое».
+func onlyRestore(p txPatch) bool {
+	return p.Amount == nil && p.Description == nil && p.CategoryID == nil && !p.ClearCat &&
+		p.Beneficiary == nil && p.Kind == nil && p.SpentAt == nil
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +123,12 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !deleted {
-		// Либо чужая, либо уже удалена — различаем чтением.
+		// Различаем чтением: обвинять человека в чужой трате на его же
+		// удалённой записи — плохой ответ.
+		if tx, readErr := s.store.Transaction(r.Context(), id); readErr == nil && tx.PayerID != userID(r) {
+			s.writeUpdateError(w, r, id, storage.ErrNotOwner)
+			return
+		}
 		s.writeUpdateError(w, r, id, storage.ErrNoRows)
 		return
 	}
@@ -132,18 +164,29 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	spentAt, err := s.parseSpentAt(body.SpentAt)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	spentAt := s.now()
+	if body.SpentAt != "" {
+		var err error
+		if spentAt, err = s.parseSpentAt(body.SpentAt); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	kind := body.Kind
-	if !isKind(kind) {
+	if kind == "" {
 		kind = classify.KindExpense
 	}
+	if !isKind(kind) {
+		writeError(w, http.StatusBadRequest, "не понял тип операции")
+		return
+	}
 	beneficiary := body.Beneficiary
-	if !isBeneficiary(beneficiary) {
+	if beneficiary == "" {
 		beneficiary = classify.BenPayer
+	}
+	if !isBeneficiary(beneficiary) {
+		writeError(w, http.StatusBadRequest, "не понял, на кого потрачено")
+		return
 	}
 	category := body.CategoryID
 	if category != nil && !hasCategory(cats, *category) {
@@ -168,7 +211,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		Amount:      amount,
 		Description: description,
 		CategoryID:  category,
-		RawText:     "добавлено на сайте",
+		RawText:     "",
 		SpentAt:     spentAt,
 	}
 	id, err := s.store.InsertTransaction(r.Context(), tx)
@@ -268,18 +311,30 @@ func (s *Server) writeUpdateError(w http.ResponseWriter, r *http.Request, id int
 	}
 }
 
+// amountLike — то, что вообще может быть суммой. Проверяется до разбора:
+// «1e2000000000» decimal разворачивает в гигабайты и кладёт процесс вместе
+// с ботом, причём разрыв соединения его уже не остановит.
+var amountLike = regexp.MustCompile(`^\d{1,10}([.,]\d{1,2})?$`)
+
 func parseAmount(raw string) (decimal.Decimal, error) {
-	amount, err := decimal.NewFromString(strings.TrimSpace(strings.ReplaceAll(raw, ",", ".")))
+	raw = strings.TrimSpace(raw)
+	if !amountLike.MatchString(raw) {
+		return decimal.Zero, errors.New("сумма должна быть числом вроде 1200 или 1200,50")
+	}
+	amount, err := decimal.NewFromString(strings.ReplaceAll(raw, ",", "."))
 	if err != nil {
 		return decimal.Zero, errors.New("сумма должна быть числом")
 	}
+	// Округление до копеек делается раньше проверки: «0.004» иначе прошло бы
+	// её и упало на check (amount > 0) пятисоткой.
+	amount = amount.Round(2)
 	if !amount.IsPositive() {
 		return decimal.Zero, errors.New("сумма должна быть больше нуля")
 	}
 	if amount.GreaterThan(maxAmount) {
 		return decimal.Zero, errors.New("такая сумма не влезет")
 	}
-	return amount.Round(2), nil
+	return amount, nil
 }
 
 // parseSpentAt принимает и YYYY-MM-DD, и полную дату. День без времени
@@ -288,7 +343,7 @@ func parseAmount(raw string) (decimal.Decimal, error) {
 func (s *Server) parseSpentAt(raw string) (time.Time, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return time.Now(), nil
+		return time.Time{}, errors.New("не понял дату")
 	}
 
 	spentAt, err := time.ParseInLocation("2006-01-02", raw, s.cfg.TZ)
@@ -311,7 +366,7 @@ func parseVersion(raw *string) (*time.Time, error) {
 	if raw == nil || *raw == "" {
 		return nil, nil
 	}
-	v, err := time.Parse(time.RFC3339, *raw)
+	v, err := time.Parse(time.RFC3339Nano, *raw)
 	if err != nil {
 		return nil, err
 	}

@@ -12,6 +12,14 @@ const MONTHS_IN = [
 
 const monthOf = (month: number) => MONTHS_IN[month - 1];
 
+/** Дата новой записи: в открытом прошлом месяце — его первое число, иначе
+ *  сегодня. Иначе запись уезжает в текущий месяц и на экране не появляется. */
+function defaultDayFor(route: Route, today: string): string {
+  const [y, m] = today.split("-").map(Number);
+  if (route.year === y && route.month === m) return today;
+  return `${route.year}-${String(route.month).padStart(2, "0")}-01`;
+}
+
 /** Одни и те же фильтры для первой страницы и для догрузки. */
 function listParams(route: Route) {
   if (route.query) return { q: route.query };
@@ -311,7 +319,9 @@ export default function App() {
         <Sheet
           tx={editing}
           categories={categories}
-          defaultDay={today}
+          today={today}
+          partnerName={me?.partner?.name}
+          defaultDay={editing ? editing.day : defaultDayFor(route, today)}
           onClose={() => {
             setEditing(null);
             setCreating(false);
@@ -319,12 +329,18 @@ export default function App() {
           onSaved={() => void load()}
           onDeleted={(tx) => {
             setItems((prev) => prev.filter((item) => item.id !== tx.id));
+            void load();
             setToast({
               text: "Удалено",
               undo: async () => {
-                await api.restore(tx.id);
-                setToast(null);
-                void load();
+                try {
+                  await api.restore(tx.id);
+                } catch (err) {
+                  handleAuthError(err);
+                } finally {
+                  setToast(null);
+                  void load();
+                }
               },
             });
           }}

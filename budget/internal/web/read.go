@@ -101,7 +101,10 @@ func (s *Server) view(t storage.Transaction, me int64) txView {
 		Mine:        t.PayerID == me,
 	}
 	if t.UpdatedAt != nil {
-		updated := t.UpdatedAt.In(s.cfg.TZ).Format(time.RFC3339)
+		// RFC3339Nano, а не RFC3339: postgres хранит микросекунды, и версия,
+		// обрезанная до секунды, не совпала бы сама с собой — вторая правка
+		// записи вечно отвечала бы 409.
+		updated := t.UpdatedAt.In(s.cfg.TZ).Format(time.RFC3339Nano)
 		v.UpdatedAt = &updated
 	}
 	return v

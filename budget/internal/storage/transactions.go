@@ -108,7 +108,8 @@ func (s *Store) MarkForReview(ctx context.Context, id int64, categoryID int32) (
 	// человек мог поставить категорию руками, и затирать её нельзя.
 	tag, err := s.pool.Exec(ctx, `
 		update transactions
-		set category_id = $2, needs_classification = false, needs_review = true
+		set category_id = $2, needs_classification = false, needs_review = true,
+		    updated_at = now()
 		where id = $1 and deleted_at is null and needs_classification`, id, categoryID)
 	if err != nil {
 		return false, err
@@ -243,7 +244,7 @@ func (s *Store) ApplyClassification(ctx context.Context, id, payerID int64,
 	tag, err := s.pool.Exec(ctx, `
 		update transactions
 		set category_id = $3, beneficiary = $4, kind = $5, spent_at = $6,
-		    needs_classification = false
+		    needs_classification = false, updated_at = now()
 		where id = $1 and payer_id = $2 and deleted_at is null
 		  and needs_classification`,
 		id, payerID, categoryID, beneficiary, kind, spentAt)
@@ -468,8 +469,12 @@ func (s *Store) UpdateTransaction(ctx context.Context, id, payerID int64, p Tran
 	}
 	if p.CategoryID != nil {
 		add("category_id = $%d", *p.CategoryID)
-		// Категорию поставил человек — воркеру тут больше делать нечего.
-		set = append(set, "needs_classification = false", "needs_review = false")
+		if *p.CategoryID != nil {
+			// Категорию поставил человек — воркеру тут больше делать нечего.
+			// А вот снятие категории с очереди не снимает: наоборот, разобрать
+			// такую запись ещё нужно.
+			set = append(set, "needs_classification = false", "needs_review = false")
+		}
 	}
 	if p.Beneficiary != nil {
 		add("beneficiary = $%d", *p.Beneficiary)
@@ -489,6 +494,36 @@ func (s *Store) UpdateTransaction(ctx context.Context, id, payerID int64, p Tran
 		return Transaction{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
+		return Transaction{}, err
+	}
+
+	updated, err := s.Transaction(ctx, id)
+	if err != nil && isNoRows(err) {
+		// Запись успели удалить между commit и чтением.
+		return Transaction{}, ErrNoRows
+	}
+	return updated, err
+}
+
+// RestoreTransaction снимает мягкое удаление. Версия здесь не проверяется:
+// у клиента её нет и быть не может, а без возврата кнопка «Вернуть» в тосте
+// была бы обманом (webapp-design.md §4.2).
+func (s *Store) RestoreTransaction(ctx context.Context, id, payerID int64) (Transaction, error) {
+	var owner int64
+	err := s.pool.QueryRow(ctx, `select payer_id from transactions where id = $1`, id).Scan(&owner)
+	if err != nil {
+		if isNoRows(err) {
+			return Transaction{}, ErrNoRows
+		}
+		return Transaction{}, err
+	}
+	if owner != payerID {
+		return Transaction{}, ErrNotOwner
+	}
+
+	if _, err := s.pool.Exec(ctx, `
+		update transactions set deleted_at = null, updated_at = now()
+		where id = $1 and payer_id = $2`, id, payerID); err != nil {
 		return Transaction{}, err
 	}
 	return s.Transaction(ctx, id)
