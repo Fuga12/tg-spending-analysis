@@ -17,6 +17,8 @@ func testStore(t *testing.T) *Store {
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL не задан — интеграционные тесты пропущены")
 	}
+	// База одна на все пакеты: гонять их параллельно нельзя, они чистят
+	// таблицы друг у друга. Запускать через make test-db (там -p 1).
 
 	ctx := context.Background()
 	if err := Migrate(ctx, dsn); err != nil {

@@ -63,10 +63,23 @@ const (
 	SourceDegraded Source = "degraded"
 )
 
+// Причины деградации. Различать их обязан воркер добора: запись, которой не
+// хватило сети, надо повторить позже, а запись, которую модель разбирать
+// отказывается, — закрыть, иначе она будет возвращаться вечно (§12).
+const (
+	ReasonNoNetwork  = "сеть недоступна"
+	ReasonNoAnswer   = "модель не ответила"
+	ReasonUnusable   = "после валидации не осталось элементов"
+	ReasonNoCategory = "категории недоступны"
+)
+
 // Result — итог разбора одного сообщения.
 type Result struct {
 	Items  []Item
 	Source Source
+
+	// Reason заполняется только для деградированного результата.
+	Reason string
 }
 
 // ErrNoAmount — в сообщении нет ни одного числа, сохранять нечего (§8).
@@ -129,7 +142,7 @@ func (s *Service) Classify(ctx context.Context, userID int64, text string) (*Res
 	if err != nil {
 		// Без категорий нельзя ни в кэш, ни в модель — остаётся деградация.
 		s.log.Error("не смог прочитать категории", "err", err)
-		return s.degrade(text, amounts, "категории недоступны"), nil
+		return s.degrade(text, amounts, ReasonNoCategory), nil
 	}
 
 	if res, ok, err := s.resolveFromCache(ctx, userID, text, amounts, cats); err != nil {
@@ -143,10 +156,10 @@ func (s *Service) Classify(ctx context.Context, userID int64, text string) (*Res
 	// Бюджет проверяется первым: Breaker.Allow расходует пробную попытку,
 	// и тратить её на вызов, которого всё равно не будет, нельзя.
 	if !s.budget.Allow(ctx) {
-		return s.degrade(text, amounts, "месячный потолок токенов исчерпан"), nil
+		return s.degrade(text, amounts, ReasonNoNetwork), nil
 	}
 	if !s.breaker.Allow() {
-		return s.degrade(text, amounts, "breaker открыт"), nil
+		return s.degrade(text, amounts, ReasonNoNetwork), nil
 	}
 
 	raw, err := s.llm.Parse(ctx, text, cats)
@@ -154,13 +167,13 @@ func (s *Service) Classify(ctx context.Context, userID int64, text string) (*Res
 	if err != nil {
 		s.log.Warn("модель не разобрала сообщение", "fast_path", false, "user_id", userID,
 			"kind", ErrKind(err), "err", err)
-		return s.degrade(text, amounts, "модель не ответила"), nil
+		return s.degrade(text, amounts, ReasonNoAnswer), nil
 	}
 
 	items := Validate(raw, text, cats, s.log)
 	if len(items) == 0 {
 		s.log.Warn("после валидации не осталось элементов", "fast_path", false, "user_id", userID)
-		return s.degrade(text, amounts, "после валидации пусто"), nil
+		return s.degrade(text, amounts, ReasonUnusable), nil
 	}
 	s.llmCalls.Add(1)
 	s.log.Info("разбор моделью", "fast_path", false, "user_id", userID, "items", len(items))
@@ -179,6 +192,7 @@ func (s *Service) degrade(text string, amounts []decimal.Decimal, reason string)
 	s.log.Warn("деградированная запись", "причина", reason, "сумма", amounts[0].String())
 	return &Result{
 		Source: SourceDegraded,
+		Reason: reason,
 		Items: []Item{{
 			Amount:              amounts[0],
 			Description:         description,

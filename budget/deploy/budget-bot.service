@@ -1,0 +1,28 @@
+[Unit]
+Description=Telegram-бот учёта совместного бюджета
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=budget
+Group=budget
+WorkingDirectory=/opt/budget
+EnvironmentFile=/opt/budget/.env
+ExecStart=/opt/budget/bot
+Restart=always
+RestartSec=5
+
+# Бот ходит только в Telegram, Yandex AI Studio и локальный Postgres —
+# больше ему ничего не нужно.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/budget
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

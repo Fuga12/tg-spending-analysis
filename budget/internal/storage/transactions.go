@@ -207,3 +207,16 @@ func (s *Store) PendingClassification(ctx context.Context, limit int) ([]Transac
 	}
 	return out, rows.Err()
 }
+
+// HasTransactions — писал ли пользователь хоть что-то за период. Нужно
+// напоминанию: молчунов дёргаем, остальных нет (§12).
+func (s *Store) HasTransactions(ctx context.Context, userID int64, from, to time.Time) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `
+		select exists (
+			select 1 from transactions
+			where payer_id = $1 and deleted_at is null
+			  and spent_at >= $2 and spent_at < $3
+		)`, userID, from, to).Scan(&exists)
+	return exists, err
+}

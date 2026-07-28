@@ -12,12 +12,18 @@ import (
 	"budget/internal/bot"
 	"budget/internal/classify"
 	"budget/internal/config"
+	"budget/internal/reminder"
 	"budget/internal/storage"
+	"budget/internal/worker"
 )
 
 // shutdownTimeout — сколько ждём уже начатые обработчики, прежде чем гасить
 // клиента Telegram и пул БД.
 const shutdownTimeout = 20 * time.Second
+
+// backfillPeriod — как часто воркер добирает непроклассифицированные
+// записи (§12).
+const backfillPeriod = 10 * time.Minute
 
 func main() {
 	migrateOnly := flag.Bool("migrate", false, "накатить миграции и выйти")
@@ -94,9 +100,21 @@ func main() {
 		}
 	}
 
+	// Воркер добора: раз в 10 минут подбирает записи, которым не досталось
+	// категории (§12).
+	backfill := worker.New(store, classifier, breaker, budget, log)
+	go backfill.Run(ctx, backfillPeriod)
+
+	rem := reminder.New(cfg, store, b, log)
+	if err := rem.Start(); err != nil {
+		log.Error("напоминание", "err", err)
+		os.Exit(1)
+	}
+
 	go func() {
 		<-ctx.Done()
 		log.Info("останавливаюсь, доделываю начатое")
+		rem.Stop()
 		b.Shutdown(shutdownTimeout)
 	}()
 

@@ -86,3 +86,7 @@ func (gooseLogger) Fatalf(format string, v ...any) {
 	slog.Error(strings.TrimSpace(fmt.Sprintf(format, v...)))
 	os.Exit(1)
 }
+
+// Pool отдаёт пул напрямую. Нужен только тестам: подготовить и вычистить
+// данные, для которых у хранилища нет и не должно быть метода.
+func (s *Store) Pool() *pgxpool.Pool { return s.pool }
