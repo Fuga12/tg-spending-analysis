@@ -174,7 +174,9 @@ func (w *Backfill) markOther(ctx context.Context, tx storage.Transaction) {
 	}
 	for _, c := range cats {
 		if c.Name == classify.CategoryOther {
-			if _, err := w.store.SetCategory(ctx, tx.ID, tx.PayerID, c.ID); err != nil {
+			// Помечаем на проверку: категорию выбрал не человек и не модель,
+			// а мы сами, лишь бы запись не висела в очереди вечно.
+			if _, err := w.store.MarkForReview(ctx, tx.ID, c.ID); err != nil {
 				w.log.Error("не закрыл запись", "err", err, "tx", tx.ID)
 			}
 			return

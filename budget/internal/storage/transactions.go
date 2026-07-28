@@ -2,6 +2,9 @@ package storage
 
 import (
 	"context"
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -22,6 +25,8 @@ type Transaction struct {
 	CategoryName        string // заполняется при чтении, join с categories
 	RawText             string
 	NeedsClassification bool
+	NeedsReview         bool       // категорию поставил воркер вслепую
+	UpdatedAt           *time.Time // версия записи: сайт, бот и воркер правят одну строку
 	SpentAt             time.Time
 	CreatedAt           time.Time
 }
@@ -71,7 +76,7 @@ func (s *Store) Transaction(ctx context.Context, id int64) (Transaction, error) 
 // платил: чужие траты не свои (§9).
 func (s *Store) SetBeneficiary(ctx context.Context, id, payerID int64, beneficiary string) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
-		update transactions set beneficiary = $3
+		update transactions set beneficiary = $3, updated_at = now()
 		where id = $1 and payer_id = $2 and deleted_at is null`, id, payerID, beneficiary)
 	if err != nil {
 		return false, err
@@ -82,8 +87,23 @@ func (s *Store) SetBeneficiary(ctx context.Context, id, payerID int64, beneficia
 // SetCategory меняет категорию и снимает флаг «разобрать позже».
 func (s *Store) SetCategory(ctx context.Context, id, payerID int64, categoryID int32) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
-		update transactions set category_id = $3, needs_classification = false
+		update transactions
+		set category_id = $3, needs_classification = false, needs_review = false,
+		    updated_at = now()
 		where id = $1 and payer_id = $2 and deleted_at is null`, id, payerID, categoryID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// MarkForReview закрывает запись категорией и помечает, что выбрал её не
+// человек: сайт покажет такие отдельным блоком (webapp-design.md §3.8).
+func (s *Store) MarkForReview(ctx context.Context, id int64, categoryID int32) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		update transactions
+		set category_id = $2, needs_classification = false, needs_review = true
+		where id = $1 and deleted_at is null`, id, categoryID)
 	if err != nil {
 		return false, err
 	}
@@ -218,7 +238,8 @@ func (s *Store) ApplyClassification(ctx context.Context, id, payerID int64,
 		update transactions
 		set category_id = $3, beneficiary = $4, kind = $5, spent_at = $6,
 		    needs_classification = false
-		where id = $1 and payer_id = $2 and deleted_at is null`,
+		where id = $1 and payer_id = $2 and deleted_at is null
+		  and needs_classification`,
 		id, payerID, categoryID, beneficiary, kind, spentAt)
 	if err != nil {
 		return false, err
@@ -238,4 +259,113 @@ func (s *Store) HasRecordedOn(ctx context.Context, userID int64, from, to time.T
 			  and created_at >= $2 and created_at < $3
 		)`, userID, from, to).Scan(&exists)
 	return exists, err
+}
+
+// TransactionFilter — что показать в списке. Пустые поля означают «всё».
+type TransactionFilter struct {
+	From, To time.Time
+	PayerID  int64
+	Category int32
+	Kind     string
+	Pending  bool   // только записи, разобранные вслепую
+	Query    string // поиск по описанию и сумме
+	Limit    int
+	Offset   int
+}
+
+// ListTransactions отдаёт страницу операций и общее число подходящих.
+// Общее число нужно кнопке «показать ещё»: без него неясно, есть ли хвост.
+func (s *Store) ListTransactions(ctx context.Context, f TransactionFilter) ([]Transaction, int, error) {
+	where := []string{"t.deleted_at is null"}
+	args := []any{}
+	add := func(cond string, val any) {
+		args = append(args, val)
+		where = append(where, fmt.Sprintf(cond, len(args)))
+	}
+
+	if !f.From.IsZero() {
+		add("t.spent_at >= $%d", f.From)
+	}
+	if !f.To.IsZero() {
+		add("t.spent_at < $%d", f.To)
+	}
+	if f.PayerID != 0 {
+		add("t.payer_id = $%d", f.PayerID)
+	}
+	if f.Category != 0 {
+		add("t.category_id = $%d", f.Category)
+	}
+	if f.Kind != "" {
+		add("t.kind = $%d", f.Kind)
+	}
+	if f.Pending {
+		where = append(where, "(t.needs_review or t.needs_classification)")
+	}
+	if q := strings.TrimSpace(f.Query); q != "" {
+		// Ищем и по описанию, и по сумме: «1200» должно находиться так же,
+		// как «пятёрочка».
+		args = append(args, "%"+q+"%")
+		byText := fmt.Sprintf("t.description ilike $%d", len(args))
+		if amount, err := decimal.NewFromString(strings.ReplaceAll(q, ",", ".")); err == nil {
+			args = append(args, amount.String())
+			byText += fmt.Sprintf(" or t.amount = $%d::numeric", len(args))
+		}
+		where = append(where, "("+byText+")")
+	}
+
+	cond := strings.Join(where, " and ")
+
+	var total int
+	if err := s.pool.QueryRow(ctx,
+		`select count(*) from transactions t where `+cond, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	limit := f.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	args = append(args, limit, f.Offset)
+
+	rows, err := s.pool.Query(ctx, `
+		select t.id, t.payer_id, t.beneficiary, t.kind, t.amount::text, t.description,
+		       t.category_id, coalesce(c.name, ''), t.raw_text,
+		       t.needs_classification, t.needs_review, t.spent_at, t.created_at, t.updated_at
+		from transactions t
+		left join categories c on c.id = t.category_id
+		where `+cond+`
+		order by t.spent_at desc, t.id desc
+		limit $`+strconv.Itoa(len(args)-1)+` offset $`+strconv.Itoa(len(args)), args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var out []Transaction
+	for rows.Next() {
+		var (
+			t      Transaction
+			amount string
+		)
+		if err := rows.Scan(&t.ID, &t.PayerID, &t.Beneficiary, &t.Kind, &amount, &t.Description,
+			&t.CategoryID, &t.CategoryName, &t.RawText,
+			&t.NeedsClassification, &t.NeedsReview, &t.SpentAt, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			return nil, 0, err
+		}
+		if t.Amount, err = decimal.NewFromString(amount); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, t)
+	}
+	return out, total, rows.Err()
+}
+
+// PendingReview — сколько записей ждут человека (§3.8 webapp-design.md).
+func (s *Store) PendingReview(ctx context.Context, from, to time.Time) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `
+		select count(*) from transactions
+		where deleted_at is null and (needs_review or needs_classification)
+		  and spent_at >= $1 and spent_at < $2`, from, to).Scan(&n)
+	return n, err
 }

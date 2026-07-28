@@ -27,6 +27,10 @@ const PartnerBucket = "Партнёру"
 
 // Line — строка блока отчёта.
 type Line struct {
+	// ID — идентификатор участника для строк «кто платил» и «на кого ушло».
+	// Ноль у категорий и служебных корзин. Фронт по нему назначает цвет:
+	// смотрящий всегда первый слот (webapp-design.md §3.6).
+	ID      int64
 	Name    string
 	Amount  decimal.Decimal
 	Percent int
@@ -140,7 +144,7 @@ func userSums(sums map[int64]decimal.Decimal, users []storage.User) []Line {
 		if name == "" {
 			name = "Кто-то ещё"
 		}
-		out = append(out, Line{Name: name, Amount: amount})
+		out = append(out, Line{ID: id, Name: name, Amount: amount})
 	}
 	return out
 }
@@ -162,4 +166,41 @@ func sortedLines(lines []Line, total decimal.Decimal) []Line {
 		lines[i].Percent = int(lines[i].Amount.Mul(hundred).Div(total).Round(0).IntPart())
 	}
 	return lines
+}
+
+// ComparableRange — отрезок прошлого месяца, с которым честно сравнивать
+// текущий (webapp-design.md §3.3).
+//
+// Правила: незакрытый месяц сравнивается с тем же числом дней прошлого, но
+// не больше, чем в прошлом месяце вообще есть — иначе 31 июля сравнивалось бы
+// с несуществующим 31 июня. Первые дни месяца не сравниваем совсем: два дня
+// против двух дней дают разброс в сотни процентов, и это не информация.
+func ComparableRange(now time.Time, year int, month time.Month, loc *time.Location) (from, to time.Time, days int, partial bool, ok bool) {
+	const minDays = 4
+
+	start, end := MonthRange(year, month, loc)
+	prevStart, prevEnd := MonthRange(year, month, loc)
+	prevStart = start.AddDate(0, -1, 0)
+	prevEnd = start
+
+	current := now.In(loc)
+	if current.Before(end) && !current.Before(start) {
+		// Месяц ещё идёт: берём столько же дней, сколько прошло.
+		elapsed := int(startOfDay(current).Sub(start).Hours()/24) + 1
+		inPrev := int(prevEnd.Sub(prevStart).Hours() / 24)
+		if elapsed < minDays {
+			return time.Time{}, time.Time{}, 0, false, false
+		}
+		if elapsed > inPrev {
+			elapsed = inPrev
+		}
+		return prevStart, prevStart.AddDate(0, 0, elapsed), elapsed, true, true
+	}
+
+	// Месяц закрыт — сравниваем целиком с целым.
+	return prevStart, prevEnd, int(prevEnd.Sub(prevStart).Hours() / 24), false, true
+}
+
+func startOfDay(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 }

@@ -43,6 +43,12 @@ type Server struct {
 
 // New собирает сервер. Ошибка означает, что запускаться нельзя.
 func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, error) {
+	// Без таймзоны сервер отвечал бы пятисотками на каждый запрос со
+	// временем: падать на старте честнее.
+	if cfg.TZ == nil {
+		return nil, errors.New("веб: не задана таймзона")
+	}
+
 	static, err := staticFS()
 	if err != nil {
 		return nil, err
@@ -59,17 +65,27 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/me", s.handleMe)
 	api.HandleFunc("DELETE /api/session", s.handleLogout)
+	api.HandleFunc("GET /api/categories", s.handleCategories)
+	api.HandleFunc("GET /api/transactions", s.handleTransactions)
+	api.HandleFunc("GET /api/report/month", s.handleMonth)
 	// Свои заглушки на прочие методы: встроенный 405 у ServeMux — текстовый,
 	// а под /api всё обязано быть JSON (webapp.md §4).
 	api.HandleFunc("/api/me", methodNotAllowed)
 	api.HandleFunc("/api/session", methodNotAllowed)
+	api.HandleFunc("/api/categories", methodNotAllowed)
+	api.HandleFunc("/api/transactions", methodNotAllowed)
+	api.HandleFunc("/api/report/month", methodNotAllowed)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /auth", s.handleAuth)
 	mux.HandleFunc("/auth", methodNotAllowed)
-	mux.Handle("/api/me", s.requireSession(api))
-	mux.Handle("/api/session", s.requireSession(api))
+	for _, path := range []string{
+		"/api/me", "/api/session", "/api/categories",
+		"/api/transactions", "/api/report/month",
+	} {
+		mux.Handle(path, s.requireSession(api))
+	}
 	// Неизвестный /api/* обязан отвечать JSON-ошибкой, иначе фронт получит
 	// текстовую страницу вместо {"error": ...} (webapp.md §4).
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {

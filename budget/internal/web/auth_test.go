@@ -54,6 +54,7 @@ func authServer(t *testing.T, allowed ...int64) (*storage.Store, string, *http.C
 	cfg := &config.Config{
 		WebAddr: addr, WebBaseURL: "http://" + addr,
 		WebInsecureCookies: true, AllowedUserIDs: allowed,
+		TZ: time.UTC,
 	}
 
 	s, err := New(cfg, store, quietLog())
@@ -273,7 +274,7 @@ func TestSecureCookieWithoutInsecureFlag(t *testing.T) {
 	}
 	cfg := &config.Config{
 		WebAddr: "127.0.0.1:0", WebBaseURL: "https://budget.example.com",
-		AllowedUserIDs: []int64{testUserID},
+		AllowedUserIDs: []int64{testUserID}, TZ: time.UTC,
 	}
 	s := &Server{cfg: cfg}
 

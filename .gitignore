@@ -2,3 +2,4 @@
 /budget/bot
 /budget/classify-test
 *.dump
+/budget/web/node_modules
