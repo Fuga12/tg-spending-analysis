@@ -1,11 +1,21 @@
 package web
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"image"
+	"image/jpeg"
+	_ "image/png" // фото с компьютера чаще всего PNG — иначе оно не разберётся
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,6 +27,15 @@ const (
 	avatarTTL     = 12 * time.Hour
 	avatarMaxSize = 1 << 20
 	avatarTimeout = 8 * time.Second
+)
+
+// Границы своего фото. Обрезает и жмёт браузер, сюда приезжает уже готовый
+// квадрат — потолки нужны на случай запроса, собранного руками.
+const (
+	avatarSideMax   = 512       // пикселей: кружок рисуется 24, больше незачем
+	avatarStoredMax = 256 << 10 // байт готовой картинки
+	avatarBodyMax   = 640 << 10 // base64 распухает на треть, плюс обвязка JSON
+	avatarQuality   = 85
 )
 
 type avatar struct {
@@ -48,6 +67,29 @@ func (s *Server) handleAvatar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Своё фото побеждает телеграмное всегда и не перепроверяется: человек
+	// поставил его руками, и подменять его тем, что вернул Telegram, нельзя.
+	own, err := s.store.Avatar(r.Context(), id)
+	if err != nil {
+		s.log.Error("чтение своего аватара", "err", err, "user_id", id)
+		writeError(w, http.StatusInternalServerError, "база не отвечает")
+		return
+	}
+	if own != nil {
+		sum := sha256.Sum256(own)
+		// Надолго кэшируется только адрес с версией: она меняется вместе с
+		// фото, поэтому новое приезжает под новым адресом. На адрес без версии
+		// (партнёр открыл вкладку раньше, чем мы поставили фото, — в его
+		// /api/me версии ещё нет) долгий кэш ставить нельзя: убранное фото
+		// осталось бы у него на год, и отозвать его было бы нечем.
+		cache := "private, no-cache"
+		if r.URL.Query().Get("v") != "" {
+			cache = "private, max-age=31536000, immutable"
+		}
+		writeImage(w, r, own, `"`+hex.EncodeToString(sum[:16])+`"`, cache)
+		return
+	}
+
 	pic, err := s.avatars.get(r.Context(), s.cfg.BotToken, id)
 	if err != nil {
 		s.log.Warn("аватар", "err", err, "user_id", id)
@@ -59,15 +101,117 @@ func (s *Server) handleAvatar(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "аватара нет")
 		return
 	}
+	writeImage(w, r, pic.data, pic.etag, "private, max-age=43200")
+}
 
+func writeImage(w http.ResponseWriter, r *http.Request, data []byte, etag, cache string) {
 	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("ETag", pic.etag)
-	w.Header().Set("Cache-Control", "private, max-age=43200")
-	if r.Header.Get("If-None-Match") == pic.etag {
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", cache)
+	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	_, _ = w.Write(pic.data)
+	_, _ = w.Write(data)
+}
+
+// avatarBody — тело PUT: картинка в base64, как её отдаёт canvas на фронте.
+// Обычным JSON, а не multipart: под /api всё остальное тоже JSON, а тридцать
+// килобайт лишней трети на base64 никого здесь не разорят.
+type avatarBody struct {
+	Photo string `json:"photo"`
+}
+
+// handleAvatarSet ставит своё фото профиля. Только себе: аватарка партнёра —
+// его дело, и менять её за него незачем.
+func (s *Server) handleAvatarSet(w http.ResponseWriter, r *http.Request) {
+	var body avatarBody
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, avatarBodyMax)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "фото слишком тяжёлое или запрос не разобрался")
+		return
+	}
+
+	pic, err := decodeAvatar(body.Photo)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	me := userID(r)
+	at, err := s.store.SetAvatar(r.Context(), me, pic)
+	if err != nil {
+		s.log.Error("сохранение своего аватара", "err", err, "user_id", me)
+		writeError(w, http.StatusInternalServerError, "не смог сохранить")
+		return
+	}
+	s.log.Info("своё фото профиля поставлено", "user_id", me, "байт", len(pic))
+	writeJSON(w, http.StatusOK, map[string]string{"avatar_version": avatarVersion(&at)})
+}
+
+// handleAvatarClear убирает своё фото: аватарка возвращается к телеграмной,
+// а если её нет — к инициалам.
+func (s *Server) handleAvatarClear(w http.ResponseWriter, r *http.Request) {
+	me := userID(r)
+	if err := s.store.ClearAvatar(r.Context(), me); err != nil {
+		s.log.Error("снятие своего аватара", "err", err, "user_id", me)
+		writeError(w, http.StatusInternalServerError, "не смог убрать")
+		return
+	}
+	s.log.Info("своё фото профиля убрано", "user_id", me)
+	writeJSON(w, http.StatusOK, map[string]string{"avatar_version": ""})
+}
+
+// avatarVersion — метка фото для URL картинки. Без неё браузер полсуток
+// показывал бы из кэша старое фото по тому же адресу.
+func avatarVersion(at *time.Time) string {
+	if at == nil {
+		return ""
+	}
+	return strconv.FormatInt(at.UnixMilli(), 10)
+}
+
+// decodeAvatar проверяет присланное и перекодирует в JPEG.
+//
+// Перекодирование — не косметика. Оно подтверждает, что это картинка, а не
+// что угодно с подходящим расширением, и выбрасывает метаданные: в снимке с
+// телефона лежат координаты места съёмки, и хранить их в базе бюджета незачем.
+func decodeAvatar(raw string) ([]byte, error) {
+	raw = strings.TrimSpace(raw)
+	// «data:image/jpeg;base64,...» — префикс от canvas на фронте.
+	if strings.HasPrefix(raw, "data:") {
+		if i := strings.Index(raw, ","); i > 0 {
+			raw = raw[i+1:]
+		}
+	}
+	data, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil || len(data) == 0 {
+		return nil, errors.New("не разобрал картинку")
+	}
+
+	// Размеры читаются из заголовка, до полного разбора: картинка 30000×30000
+	// весит килобайты, а в память разворачивается гигабайтами и кладёт процесс
+	// вместе с ботом.
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, errors.New("это не картинка — нужен JPEG или PNG")
+	}
+	if cfg.Width > avatarSideMax || cfg.Height > avatarSideMax {
+		return nil, fmt.Errorf("картинка больше %d пикселей по стороне", avatarSideMax)
+	}
+
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, errors.New("не разобрал картинку")
+	}
+
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, img, &jpeg.Options{Quality: avatarQuality}); err != nil {
+		return nil, errors.New("не смог пережать картинку")
+	}
+	if out.Len() > avatarStoredMax {
+		return nil, errors.New("фото слишком тяжёлое")
+	}
+	return out.Bytes(), nil
 }
 
 func (c *avatarCache) get(ctx context.Context, token string, userID int64) (avatar, error) {

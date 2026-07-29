@@ -4,6 +4,7 @@ import Sheet from "./Sheet";
 import { CategoryBars, DayColumns, MonthStrip, StackedBar } from "./Charts";
 import Categories from "./Categories";
 import Avatar from "./Avatar";
+import Photo from "./Photo";
 import { beneficiaryLabel, dayLabel, money, monthName, plural, todayFrom } from "./format";
 
 const PAGE = 200;
@@ -38,6 +39,14 @@ function deltasOf(lines: Line[]): Map<string, number> {
 /** Цвет закреплён за человеком: смотрящий — первый слот, партнёр — второй,
  *  общие корзины — третий. Не по порядку в базе: иначе у двоих будут разные
  *  цвета у одних и тех же людей (webapp-design.md §3.6). */
+/** Метка фото человека. Уезжает в URL картинки: без неё браузер после замены
+ *  фото полсуток показывает из кэша старое. */
+function photoOf(id: number, me: Me | null): string {
+  if (!me) return "";
+  if (id === me.id) return me.avatar_version;
+  return me.partner?.id === id ? me.partner.avatar_version : "";
+}
+
 function slotOf(line: Line, me: Me | null): number {
   if (line.id === 0) return 3;
   if (me && line.id === me.id) return 1;
@@ -110,6 +119,7 @@ export default function App() {
   const [toast, setToast] = useState<{ text: string; undo?: () => void } | null>(null);
   const [days, setDays] = useState<DayPoint[]>([]);
   const [editingCats, setEditingCats] = useState(false);
+  const [editingPhoto, setEditingPhoto] = useState(false);
   const [months, setMonths] = useState<MonthPoint[]>([]);
 
   // Номер запроса: ответы по параллельным соединениям приходят не по
@@ -384,7 +394,11 @@ export default function App() {
             </button>
           )}
 
-          <Footer me={me} onCategories={() => setEditingCats(true)} />
+          <Footer
+            me={me}
+            onCategories={() => setEditingCats(true)}
+            onPhoto={() => setEditingPhoto(true)}
+          />
         </div>
       )}
 
@@ -423,6 +437,16 @@ export default function App() {
               },
             });
           }}
+        />
+      )}
+
+      {editingPhoto && (
+        <Photo
+          me={me}
+          onClose={() => setEditingPhoto(false)}
+          // Заново, а не подстановкой версии из ответа: аватарка своя ещё и
+          // в строках, и все они смотрят на me.
+          onSaved={() => api.me().then(setMe).catch(handleAuthError)}
         />
       )}
 
@@ -521,6 +545,7 @@ function Row({ tx, me, onOpen }: { tx: Tx; me: Me | null; onOpen: () => void }) 
         name={name}
         other={isMine ? me?.partner?.name : me?.name}
         partner={!isMine}
+        version={photoOf(tx.payer_id, me)}
       />
       <div className="row__main">
         <div className="row__title">
@@ -554,13 +579,32 @@ async function leave(everywhere: boolean) {
   }
 }
 
-function Footer({ me, onCategories }: { me: Me | null; onCategories: () => void }) {
+function Footer({
+  me,
+  onCategories,
+  onPhoto,
+}: {
+  me: Me | null;
+  onCategories: () => void;
+  onPhoto: () => void;
+}) {
   return (
     <div className="foot">
-      <span className="foot__me">
-        {me && <Avatar id={me.id} name={me.name} other={me.partner?.name} size={20} />}
+      {/* Своё имя — оно же кнопка своего фото: другого места для неё нет,
+          а искать настройки профиля в списке трат никто не станет. */}
+      <button className="foot__me" onClick={onPhoto}>
+        {me && (
+          <Avatar
+            id={me.id}
+            name={me.name}
+            other={me.partner?.name}
+            version={me.avatar_version}
+            size={20}
+          />
+        )}
         {me?.name ?? "…"}
-      </span>
+        <span className="foot__edit">фото</span>
+      </button>
       <button onClick={onCategories}>Категории</button>
       <button onClick={() => void leave(false)}>Выйти</button>
       <button className="foot__danger" onClick={() => void leave(true)}>

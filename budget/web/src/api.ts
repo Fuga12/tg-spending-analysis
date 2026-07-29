@@ -21,13 +21,20 @@ export type Category = {
   user_id: number | null;
 };
 
-export type Person = { id: number; name: string; dative: string };
+export type Person = {
+  id: number;
+  name: string;
+  dative: string;
+  /** Метка своего фото; пустая — своего нет, аватарка берётся у Telegram. */
+  avatar_version: string;
+};
 
 export type Me = {
   id: number;
   name: string;
   /** «Илье», «Уле» — падеж считает сервер, чтобы правила жили в одном месте. */
   dative: string;
+  avatar_version: string;
   partner: Person | null;
 };
 
@@ -130,6 +137,12 @@ export const api = {
     user_id: number | null;
   }) =>
     send<Category>("POST", "/api/categories", body),
+
+  /** Своё фото профиля: base64 из canvas. Телеграмным не перебивается. */
+  setAvatar: (photo: string) =>
+    send<{ avatar_version: string }>("PUT", "/api/avatar", { photo }),
+
+  clearAvatar: () => send<{ avatar_version: string }>("DELETE", "/api/avatar", undefined),
 
   daily: (year: number, month: number) =>
     get<DayPoint[]>(`/api/report/daily?year=${year}&month=${month}`),

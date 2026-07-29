@@ -379,11 +379,32 @@ button {
   display: block;
 }
 
-.foot__me {
+/* Своё имя — кнопка, но не ссылка: цвет остаётся текстовым, синим подсвечено
+   только само действие. Специфичность выше «.foot button». */
+.foot .foot__me {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   color: var(--ink-2);
+}
+
+.foot__edit {
+  color: var(--slot-1);
+}
+
+/* Крупный кружок на экране фото: 96 пикселей, чтобы было видно, что выйдет. */
+.photo {
+  display: grid;
+  place-items: center;
+  margin: 8px 0 16px;
+}
+
+.photo__preview {
+  width: 96px;
+  height: 96px;
+  border-radius: 999px;
+  object-fit: cover;
+  display: block;
 }
 
 /* --- прочее -------------------------------------------------------- */
