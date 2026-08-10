@@ -134,20 +134,23 @@ func (s *Store) DeleteTransaction(ctx context.Context, id int64) (bool, error) {
 
 // ExpenseRow — строка для отчёта: ровно то, что нужно четырём блокам §10.
 type ExpenseRow struct {
-	PayerID      int64
-	Beneficiary  string
-	Amount       decimal.Decimal
-	CategoryID   *int32
-	CategoryName string // пусто — «Без категории»
+	PayerID         int64
+	Beneficiary     string
+	BeneficiaryName string // имя произвольной группы, если это group:<id>
+	Amount          decimal.Decimal
+	CategoryID      *int32
+	CategoryName    string // пусто — «Без категории»
 }
 
 // Expenses отдаёт расходы за период по дате траты. Переводы не расход и в
 // отчёты не попадают ни в каком виде (§3).
 func (s *Store) Expenses(ctx context.Context, from, to time.Time) ([]ExpenseRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		select t.payer_id, t.beneficiary, t.amount::text, t.category_id, coalesce(c.name, '')
+		select t.payer_id, t.beneficiary, coalesce(bg.name, ''),
+		       t.amount::text, t.category_id, coalesce(c.name, '')
 		from transactions t
 		left join categories c on c.id = t.category_id
+		left join beneficiary_groups bg on t.beneficiary = 'group:' || bg.id::text
 		where t.deleted_at is null
 		  and t.kind = 'expense'
 		  and t.spent_at >= $1 and t.spent_at < $2`, from, to)
@@ -162,7 +165,8 @@ func (s *Store) Expenses(ctx context.Context, from, to time.Time) ([]ExpenseRow,
 			r      ExpenseRow
 			amount string
 		)
-		if err := rows.Scan(&r.PayerID, &r.Beneficiary, &amount, &r.CategoryID, &r.CategoryName); err != nil {
+		if err := rows.Scan(&r.PayerID, &r.Beneficiary, &r.BeneficiaryName,
+			&amount, &r.CategoryID, &r.CategoryName); err != nil {
 			return nil, err
 		}
 		if r.Amount, err = decimal.NewFromString(amount); err != nil {
@@ -282,14 +286,15 @@ var (
 
 // TransactionFilter — что показать в списке. Пустые поля означают «всё».
 type TransactionFilter struct {
-	From, To time.Time
-	PayerID  int64
-	Category int32
-	Kind     string
-	Pending  bool   // только записи, разобранные вслепую
-	Query    string // поиск по описанию и сумме
-	Limit    int
-	Offset   int
+	From, To  time.Time
+	PayerID   int64
+	Category  int32
+	Recipient string // both, group:<id> или user:<id>
+	Kind      string
+	Pending   bool   // только записи, разобранные вслепую
+	Query     string // поиск по описанию и сумме
+	Limit     int
+	Offset    int
 }
 
 // ListTransactions отдаёт страницу операций и общее число подходящих.
@@ -313,6 +318,18 @@ func (s *Store) ListTransactions(ctx context.Context, f TransactionFilter) ([]Tr
 	}
 	if f.Category != 0 {
 		add("t.category_id = $%d", f.Category)
+	}
+	if f.Recipient == "both" || strings.HasPrefix(f.Recipient, "group:") {
+		add("t.beneficiary = $%d", f.Recipient)
+	} else if strings.HasPrefix(f.Recipient, "user:") {
+		id, err := strconv.ParseInt(strings.TrimPrefix(f.Recipient, "user:"), 10, 64)
+		if err == nil && id > 0 {
+			args = append(args, id)
+			n := len(args)
+			where = append(where, fmt.Sprintf(
+				"((t.beneficiary = 'payer' and t.payer_id = $%d) or (t.beneficiary = 'partner' and t.payer_id <> $%d))",
+				n, n))
+		}
 	}
 	if f.Kind != "" {
 		add("t.kind = $%d", f.Kind)

@@ -45,13 +45,14 @@ func (s *Server) handleTransactions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
 	filter := storage.TransactionFilter{
-		PayerID:  intParam(q.Get("payer")),
-		Category: categoryParam(q.Get("category")),
-		Kind:     q.Get("kind"),
-		Pending:  q.Get("pending") == "1",
-		Query:    q.Get("q"),
-		Limit:    int(intParam(q.Get("limit"))),
-		Offset:   int(max64(intParam(q.Get("offset")), 0)),
+		PayerID:   intParam(q.Get("payer")),
+		Category:  categoryParam(q.Get("category")),
+		Recipient: q.Get("recipient"),
+		Kind:      q.Get("kind"),
+		Pending:   q.Get("pending") == "1",
+		Query:     q.Get("q"),
+		Limit:     int(intParam(q.Get("limit"))),
+		Offset:    int(max64(intParam(q.Get("offset")), 0)),
 	}
 
 	// Поиск идёт по всем месяцам — иначе искать незачем (§3.2).
@@ -112,6 +113,7 @@ func (s *Server) view(t storage.Transaction, me int64) txView {
 // lineView — строка блока отчёта.
 type lineView struct {
 	ID      int64  `json:"id"`
+	Key     string `json:"key"`
 	Name    string `json:"name"`
 	Amount  string `json:"amount"`
 	Percent int    `json:"percent"`
@@ -135,14 +137,15 @@ type compareView struct {
 }
 
 type monthResponse struct {
-	Year          int          `json:"year"`
-	Month         int          `json:"month"`
-	Total         string       `json:"total"`
-	Compare       *compareView `json:"compare"`
-	Categories    []lineView   `json:"categories"`
-	Payers        []lineView   `json:"payers"`
-	Beneficiaries []lineView   `json:"beneficiaries"`
-	Pending       int          `json:"pending"`
+	Year           int          `json:"year"`
+	Month          int          `json:"month"`
+	Total          string       `json:"total"`
+	RecipientTotal string       `json:"recipient_total,omitempty"`
+	Compare        *compareView `json:"compare"`
+	Categories     []lineView   `json:"categories"`
+	Payers         []lineView   `json:"payers"`
+	Beneficiaries  []lineView   `json:"beneficiaries"`
+	Pending        int          `json:"pending"`
 }
 
 func (s *Server) handleMonth(w http.ResponseWriter, r *http.Request) {
@@ -171,19 +174,33 @@ func (s *Server) handleMonth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	m := report.BuildMonth(year, month, rows, users)
+	recipient := r.URL.Query().Get("recipient")
+	reportRows := rows
+	if recipient != "" {
+		reportRows = rowsForRecipient(rows, recipient, users)
+	}
+	selected := report.BuildMonth(year, month, reportRows, users)
 	categories := lines(m.Categories)
+	payers := lines(m.Payers)
+	recipientTotal := ""
+	if recipient != "" {
+		categories = lines(selected.Categories)
+		payers = lines(selected.Payers)
+		recipientTotal = selected.Total.String()
+	}
 	if cmp, ok := report.ComparableRange(s.now(), year, month, s.cfg.TZ); ok {
-		s.addCategoryDeltas(r, categories, cmp)
+		s.addCategoryDeltas(r, categories, cmp, recipient, users)
 	}
 
 	resp := monthResponse{
-		Year:          year,
-		Month:         int(month),
-		Total:         m.Total.String(),
-		Categories:    categories,
-		Payers:        lines(m.Payers),
-		Beneficiaries: lines(m.Beneficiaries),
-		Pending:       pending,
+		Year:           year,
+		Month:          int(month),
+		Total:          m.Total.String(),
+		RecipientTotal: recipientTotal,
+		Categories:     categories,
+		Payers:         payers,
+		Beneficiaries:  lines(m.Beneficiaries),
+		Pending:        pending,
 	}
 	if cmp, ok := s.compare(r, year, month, m.Total); ok {
 		resp.Compare = cmp
@@ -243,12 +260,19 @@ func (s *Server) compare(r *http.Request, year int, month time.Month, total deci
 // addCategoryDeltas дописывает к каждой категории разницу с сопоставимым
 // отрезком прошлого месяца. Сравниваются равные отрезки: у незакрытого
 // месяца это не весь месяц, а столько же дней, сколько прошло.
-func (s *Server) addCategoryDeltas(r *http.Request, categories []lineView, c report.Comparison) {
+func (s *Server) addCategoryDeltas(
+	r *http.Request,
+	categories []lineView,
+	c report.Comparison,
+	recipient string,
+	users []storage.User,
+) {
 	prevRows, err := s.store.Expenses(r.Context(), c.From, c.To)
 	if err != nil {
 		s.log.Warn("категории прошлого месяца", "err", err)
 		return
 	}
+	prevRows = rowsForRecipient(prevRows, recipient, users)
 
 	prev := map[string]decimal.Decimal{}
 	for _, row := range prevRows {
@@ -267,6 +291,7 @@ func (s *Server) addCategoryDeltas(r *http.Request, categories []lineView, c rep
 			s.log.Warn("сопоставимый отрезок текущего месяца", "err", err)
 			return
 		}
+		curRows = rowsForRecipient(curRows, recipient, users)
 		for _, row := range curRows {
 			name := row.CategoryName
 			if name == "" {
@@ -282,6 +307,47 @@ func (s *Server) addCategoryDeltas(r *http.Request, categories []lineView, c rep
 			amount = current[line.Name]
 		}
 		categories[i].Delta = amount.Sub(prev[line.Name]).String()
+	}
+}
+
+// rowsForRecipient применяет к отчёту тот же срез, что список операций.
+// В базе payer/partner записаны относительно плательщика, а UI выбирает
+// конкретного человека, поэтому здесь отношение разрешается в user:<id>.
+func rowsForRecipient(rows []storage.ExpenseRow, recipient string, users []storage.User) []storage.ExpenseRow {
+	if recipient == "" {
+		return rows
+	}
+
+	out := make([]storage.ExpenseRow, 0, len(rows))
+	for _, row := range rows {
+		if expenseMatchesRecipient(row, recipient, users) {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+func expenseMatchesRecipient(row storage.ExpenseRow, recipient string, users []storage.User) bool {
+	if recipient == "both" || strings.HasPrefix(recipient, "group:") {
+		return row.Beneficiary == recipient
+	}
+	if !strings.HasPrefix(recipient, "user:") {
+		return false
+	}
+	target, err := strconv.ParseInt(strings.TrimPrefix(recipient, "user:"), 10, 64)
+	if err != nil || target <= 0 {
+		return false
+	}
+	switch row.Beneficiary {
+	case "payer":
+		return row.PayerID == target
+	case "partner":
+		if len(users) != 2 {
+			return false
+		}
+		return row.PayerID != target
+	default:
+		return false
 	}
 }
 
@@ -301,7 +367,7 @@ func (s *Server) sum(r *http.Request, from, to time.Time) (decimal.Decimal, erro
 func lines(in []report.Line) []lineView {
 	out := make([]lineView, 0, len(in))
 	for _, l := range in {
-		out = append(out, lineView{ID: l.ID, Name: l.Name, Amount: l.Amount.String(), Percent: l.Percent})
+		out = append(out, lineView{ID: l.ID, Key: l.Key, Name: l.Name, Amount: l.Amount.String(), Percent: l.Percent})
 	}
 	return out
 }

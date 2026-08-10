@@ -5,6 +5,7 @@
 package report
 
 import (
+	"fmt"
 	"sort"
 	"time"
 
@@ -31,6 +32,7 @@ type Line struct {
 	// Ноль у категорий и служебных корзин. Фронт по нему назначает цвет:
 	// смотрящий всегда первый слот (webapp-design.md §3.6).
 	ID      int64
+	Key     string
 	Name    string
 	Amount  decimal.Decimal
 	Percent int
@@ -69,6 +71,8 @@ func BuildMonth(year int, month time.Month, rows []storage.ExpenseRow, users []s
 	spentOn := map[int64]decimal.Decimal{}
 	common := decimal.Zero
 	unknownPartner := decimal.Zero
+	groups := map[string]decimal.Decimal{}
+	groupNames := map[string]string{}
 
 	for _, r := range rows {
 		m.Total = m.Total.Add(r.Amount)
@@ -94,8 +98,11 @@ func BuildMonth(year int, month time.Month, rows []storage.ExpenseRow, users []s
 				// пропасть не должны, но и общими они не стали.
 				unknownPartner = unknownPartner.Add(r.Amount)
 			}
-		default:
+		case classify.BenBoth:
 			common = common.Add(r.Amount)
+		default:
+			groups[r.Beneficiary] = groups[r.Beneficiary].Add(r.Amount)
+			groupNames[r.Beneficiary] = r.BeneficiaryName
 		}
 	}
 
@@ -104,10 +111,17 @@ func BuildMonth(year int, month time.Month, rows []storage.ExpenseRow, users []s
 
 	beneficiaries := userSums(spentOn, users)
 	if common.IsPositive() {
-		beneficiaries = append(beneficiaries, Line{Name: CommonBucket, Amount: common})
+		beneficiaries = append(beneficiaries, Line{Key: classify.BenBoth, Name: CommonBucket, Amount: common})
 	}
 	if unknownPartner.IsPositive() {
-		beneficiaries = append(beneficiaries, Line{Name: PartnerBucket, Amount: unknownPartner})
+		beneficiaries = append(beneficiaries, Line{Key: classify.BenPartner, Name: PartnerBucket, Amount: unknownPartner})
+	}
+	for key, amount := range groups {
+		name := groupNames[key]
+		if name == "" {
+			name = "Удалённая группа"
+		}
+		beneficiaries = append(beneficiaries, Line{Key: key, Name: name, Amount: amount})
 	}
 	m.Beneficiaries = sortedLines(beneficiaries, decimal.Zero)
 	return m
@@ -150,7 +164,7 @@ func userSums(sums map[int64]decimal.Decimal, users []storage.User) []Line {
 		if name == "" {
 			name = "Кто-то ещё"
 		}
-		out = append(out, Line{ID: id, Name: name, Amount: amount})
+		out = append(out, Line{ID: id, Key: fmt.Sprintf("user:%d", id), Name: name, Amount: amount})
 	}
 	return out
 }

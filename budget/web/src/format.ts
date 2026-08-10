@@ -1,7 +1,7 @@
 // Деньги приходят строками: в JSON число — это float64, а деньги через float
 // гонять нельзя.
 
-import type { Me } from "./api";
+import type { BeneficiaryGroup, Me } from "./api";
 
 const NBSP = " ";
 
@@ -68,8 +68,16 @@ export function todayFrom(list: { day: string }[]): string {
  * обоих, и второй человек прочитает эти же слова про себя наоборот. Имена
  * такой двусмысленности не допускают, а про себя понятнее всего «мне».
  */
-export function beneficiaryLabel(beneficiary: string, payerID: number, me: Me | null): string {
+export function beneficiaryLabel(
+  beneficiary: string,
+  payerID: number,
+  me: Me | null,
+  groups: BeneficiaryGroup[] = [],
+): string {
   if (beneficiary === "both") return "на двоих";
+	if (beneficiary.startsWith("group:")) {
+		return groups.find((g) => g.key === beneficiary)?.name ?? "другим";
+	}
   const target = beneficiary === "payer" ? payerID : otherID(payerID, me);
   return personLabel(target, me) ?? (beneficiary === "payer" ? "на себя" : "партнёру");
 }

@@ -65,10 +65,14 @@ export function StackedBar({
   title,
   lines,
   slotOf,
+	onPick,
+	activeKey,
 }: {
   title: string;
   lines: Line[];
   slotOf: (line: Line) => number;
+	onPick?: (line: Line) => void;
+	activeKey?: string;
 }) {
   const total = lines.reduce((sum, l) => sum + num(l.amount), 0);
   if (total <= 0) return null;
@@ -90,12 +94,24 @@ export function StackedBar({
           />
         ))}
       </div>
-      <div className="legend">
+      <div className={`legend${onPick ? " legend--selectable" : ""}`}>
         {lines.map((l) => (
-          <span key={l.name} className="legend__item">
+          <button
+			  key={l.name}
+			  className={`legend__item${onPick ? " legend__item--action" : ""}${activeKey === l.key ? " legend__item--on" : ""}`}
+			  disabled={!onPick}
+			  aria-pressed={onPick ? activeKey === l.key : undefined}
+			  onClick={() => onPick?.(l)}
+			>
             <i className={`legend__dot slot-${slotOf(l)}`} />
-            {l.name} <b>{money(l.amount)}</b>
-          </span>
+			<span className="legend__name">{l.name}</span>
+			<b>{money(l.amount)}</b>
+			{onPick && (
+			  <span className="legend__check" aria-hidden>
+				{activeKey === l.key ? "✓" : ""}
+			  </span>
+			)}
+		  </button>
         ))}
       </div>
     </section>
@@ -114,6 +130,7 @@ export function CategoryBars({
   activeID,
   onPick,
   deltas,
+	scope,
 }: {
   lines: Line[];
   activeID: number;
@@ -121,6 +138,7 @@ export function CategoryBars({
   /** Насколько категория изменилась к прошлому месяцу. Это единственный
    *  вопрос, который вообще задают статистике. */
   deltas?: Map<string, number>;
+	scope?: { name: string; amount: string };
 }) {
   const [expanded, setExpanded] = useState(false);
   if (lines.length === 0) return null;
@@ -135,7 +153,10 @@ export function CategoryBars({
 
   return (
     <section className="block">
-      <h2 className="block__title">По категориям</h2>
+	  <div className="block__heading">
+		<h2 className="block__title">По категориям</h2>
+		{scope && <span className="block__scope">{scope.name} · {money(scope.amount)}</span>}
+	  </div>
       <div className="bars">
         {[...head, ...orphans, ...(expanded ? rest : [])].map((l) => (
           <button

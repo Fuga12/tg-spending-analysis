@@ -2,6 +2,7 @@ package classify
 
 import (
 	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/shopspring/decimal"
@@ -125,7 +126,11 @@ func amountsToStrings(amounts []decimal.Decimal) string {
 }
 
 func isBeneficiary(s string) bool {
-	return s == BenPayer || s == BenPartner || s == BenBoth
+	if s == BenPayer || s == BenPartner || s == BenBoth {
+		return true
+	}
+	id, err := strconv.ParseInt(strings.TrimPrefix(s, "group:"), 10, 32)
+	return strings.HasPrefix(s, "group:") && err == nil && id > 0
 }
 
 func isKind(s string) bool {

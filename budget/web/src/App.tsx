@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, Category, DayPoint, Line, Me, MonthPoint, MonthReport, Tx, Unauthorized } from "./api";
+import { api, BeneficiaryGroup, Category, DayPoint, Line, Me, MonthPoint, MonthReport, Tx, Unauthorized } from "./api";
 import Sheet from "./Sheet";
 import { CategoryBars, DayColumns, MonthStrip, StackedBar } from "./Charts";
 import Categories from "./Categories";
 import Avatar from "./Avatar";
 import Photo from "./Photo";
+import Groups from "./Groups";
 import { beneficiaryLabel, dayLabel, money, monthName, plural, todayFrom } from "./format";
 
 const PAGE = 200;
@@ -48,7 +49,8 @@ function photoOf(id: number, me: Me | null): string {
 }
 
 function slotOf(line: Line, me: Me | null): number {
-  if (line.id === 0) return 3;
+	if (line.key.startsWith("group:")) return 3;
+	if (line.id === 0) return 3;
   if (me && line.id === me.id) return 1;
   return 2;
 }
@@ -69,10 +71,11 @@ function listParams(route: Route) {
     month: route.month,
     pending: route.pending ? 1 : undefined,
     category: route.category || undefined,
+	recipient: route.recipient || undefined,
   };
 }
 
-type Route = { year: number; month: number; query: string; pending: boolean; category: number };
+type Route = { year: number; month: number; query: string; pending: boolean; category: number; recipient: string };
 
 /** Разбор хэша. Полноценный роутер ради трёх состояний — лишняя зависимость. */
 function parseHash(): Route {
@@ -88,6 +91,7 @@ function parseHash(): Route {
     query: params.get("q") ?? "",
     pending: params.get("pending") === "1",
     category: Number(params.get("cat") ?? 0) || 0,
+	recipient: params.get("to") ?? "",
   };
 }
 
@@ -96,6 +100,7 @@ function hashFor(r: Route): string {
   if (r.query) params.set("q", r.query);
   if (r.pending) params.set("pending", "1");
   if (r.category) params.set("cat", String(r.category));
+	if (r.recipient) params.set("to", r.recipient);
   const tail = params.toString();
   return `#/m/${r.year}-${String(r.month).padStart(2, "0")}${tail ? "?" + tail : ""}`;
 }
@@ -114,11 +119,13 @@ export default function App() {
   const [searching, setSearching] = useState(false);
   const [stuck, setStuck] = useState(false);
   const [categories, setCategories] = useState<Category[]>([]);
+	const [groups, setGroups] = useState<BeneficiaryGroup[]>([]);
   const [editing, setEditing] = useState<Tx | null>(null);
   const [creating, setCreating] = useState(false);
   const [toast, setToast] = useState<{ text: string; undo?: () => void } | null>(null);
   const [days, setDays] = useState<DayPoint[]>([]);
   const [editingCats, setEditingCats] = useState(false);
+	const [editingGroups, setEditingGroups] = useState(false);
   const [editingPhoto, setEditingPhoto] = useState(false);
   const [months, setMonths] = useState<MonthPoint[]>([]);
 
@@ -152,6 +159,7 @@ export default function App() {
   useEffect(() => {
     api.me().then(setMe).catch(handleAuthError);
     api.categories().then(setCategories).catch(() => {});
+	api.beneficiaryGroups().then(setGroups).catch(() => {});
     api.months().then(setMonths).catch(() => {});
   }, []);
 
@@ -175,7 +183,7 @@ export default function App() {
     const id = ++request.current;
     try {
       const [monthData, page, dayData] = await Promise.all([
-        route.query ? Promise.resolve(null) : api.month(route.year, route.month),
+		route.query ? Promise.resolve(null) : api.month(route.year, route.month, route.recipient),
         api.transactions({ ...listParams(route), limit: PAGE }),
         route.query ? Promise.resolve([]) : api.daily(route.year, route.month),
       ]);
@@ -195,7 +203,7 @@ export default function App() {
         setRefreshing(false);
       }
     }
-  }, [route.year, route.month, route.query, route.pending, route.category]); // eslint-disable-line
+	}, [route.year, route.month, route.query, route.pending, route.category, route.recipient]); // eslint-disable-line
 
   useEffect(() => {
     void load();
@@ -227,6 +235,7 @@ export default function App() {
 
   const today = useMemo(() => todayFrom(items), [items]);
   const grouped = useMemo(() => groupByDay(items), [items]);
+	const selectedRecipient = report?.beneficiaries.find((line) => line.key === route.recipient);
 
   if (expired) return <Expired />;
 
@@ -345,12 +354,23 @@ export default function App() {
                     activeID={route.category}
                     onPick={(id) => go({ ...route, category: route.category === id ? 0 : id }, true)}
                     deltas={deltasOf(report.categories)}
+					scope={selectedRecipient && report.recipient_total
+					  ? { name: selectedRecipient.name, amount: report.recipient_total }
+					  : undefined}
                   />
                   <DayColumns days={days} today={today} />
                 </div>
                 <div className="grid__side">
                   <StackedBar title="Кто платил" lines={report.payers} slotOf={(l) => slotOf(l, me)} />
-                  <StackedBar title="На кого ушло" lines={report.beneficiaries} slotOf={(l) => slotOf(l, me)} />
+				  <StackedBar
+					title="На кого ушло"
+					lines={report.beneficiaries}
+					slotOf={(l) => slotOf(l, me)}
+					activeKey={route.recipient}
+					onPick={(line) =>
+					  go({ ...route, recipient: route.recipient === line.key ? "" : line.key }, true)
+					}
+				  />
                 </div>
               </div>
             </>
@@ -370,6 +390,20 @@ export default function App() {
             </div>
           )}
 
+		  {selectedRecipient && (
+			<div className="list-scope">
+			  <span className="list-scope__title">Операции · {selectedRecipient.name}</span>
+			  <span className="list-scope__count">{total}</span>
+			  <button
+				className="list-scope__clear"
+				onClick={() => go({ ...route, recipient: "" }, true)}
+				aria-label="Показать операции для всех"
+			  >
+				Сбросить
+			  </button>
+			</div>
+		  )}
+
           {items.length === 0 ? (
             <Empty query={route.query} month={route.month} />
           ) : (
@@ -381,7 +415,7 @@ export default function App() {
                 </div>
                 <div className="rows">
                   {dayItems.map((tx) => (
-                    <Row key={tx.id} tx={tx} me={me} onOpen={() => setEditing(tx)} />
+					<Row key={tx.id} tx={tx} me={me} groups={groups} onOpen={() => setEditing(tx)} />
                   ))}
                 </div>
               </section>
@@ -397,6 +431,7 @@ export default function App() {
           <Footer
             me={me}
             onCategories={() => setEditingCats(true)}
+			onGroups={() => setEditingGroups(true)}
             onPhoto={() => setEditingPhoto(true)}
           />
         </div>
@@ -412,6 +447,7 @@ export default function App() {
         <Sheet
           tx={editing}
           categories={categories}
+		  groups={groups}
           today={today}
           me={me}
           defaultDay={editing ? editing.day : defaultDayFor(route, today)}
@@ -454,6 +490,7 @@ export default function App() {
         <Categories
           categories={categories}
           me={me}
+		  groups={groups}
           onClose={() => setEditingCats(false)}
           onSaved={(c) => {
             setCategories((prev) =>
@@ -465,6 +502,17 @@ export default function App() {
           }}
         />
       )}
+
+	  {editingGroups && (
+		<Groups
+		  groups={groups}
+		  onClose={() => setEditingGroups(false)}
+		  onChanged={(next) => {
+			setGroups(next);
+			void load();
+		  }}
+		/>
+	  )}
 
       {toast && (
         <div className="toast" role="status">
@@ -532,7 +580,7 @@ function SearchSummary({ query, total }: { query: string; total: number }) {
   );
 }
 
-function Row({ tx, me, onOpen }: { tx: Tx; me: Me | null; onOpen: () => void }) {
+function Row({ tx, me, groups, onOpen }: { tx: Tx; me: Me | null; groups: BeneficiaryGroup[]; onOpen: () => void }) {
   const isMine = me ? tx.payer_id === me.id : tx.mine;
   const name = isMine ? me?.name ?? "Я" : me?.partner?.name ?? "Партнёр";
   const transfer = tx.kind === "transfer";
@@ -558,6 +606,7 @@ function Row({ tx, me, onOpen }: { tx: Tx; me: Me | null; onOpen: () => void }) 
                 tx.beneficiary,
                 tx.payer_id,
                 me,
+				groups,
               )}`}
         </div>
       </div>
@@ -582,10 +631,12 @@ async function leave(everywhere: boolean) {
 function Footer({
   me,
   onCategories,
+	onGroups,
   onPhoto,
 }: {
   me: Me | null;
   onCategories: () => void;
+	onGroups: () => void;
   onPhoto: () => void;
 }) {
   return (
@@ -606,6 +657,7 @@ function Footer({
         <span className="foot__edit">фото</span>
       </button>
       <button onClick={onCategories}>Категории</button>
+	  <button onClick={onGroups}>Группы</button>
       <button onClick={() => void leave(false)}>Выйти</button>
       <button className="foot__danger" onClick={() => void leave(true)}>
         Выйти отовсюду
@@ -671,5 +723,3 @@ function dayExpenses(items: Tx[]): string {
   const abs = cents < 0n ? -cents : cents;
   return `${sign}${abs / 100n}.${String(abs % 100n).padStart(2, "0")}`;
 }
-
-

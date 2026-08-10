@@ -883,6 +883,24 @@ button {
   color: var(--ink-2);
 }
 
+.block__heading {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 10px;
+}
+
+.block__heading .block__title {
+	margin: 0;
+}
+
+.block__scope {
+	color: var(--ink-2);
+	font-size: 13px;
+	font-variant-numeric: tabular-nums;
+}
+
 .slot-1 {
   background: var(--slot-1);
 }
@@ -970,6 +988,65 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+	padding: 4px 0;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	border: 1px solid transparent;
+	border-radius: 9px;
+}
+
+.legend--selectable {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 6px;
+}
+
+.legend--selectable .legend__item {
+	display: grid;
+	grid-template-columns: 10px minmax(0, 1fr) auto 16px;
+	gap: 7px;
+	width: 100%;
+	min-height: 34px;
+	padding: 7px 9px;
+	background: color-mix(in srgb, var(--ink) 4%, transparent);
+	border-color: var(--line);
+}
+
+.legend__item--action {
+	cursor: pointer;
+	transition: background 120ms ease, border-color 120ms ease;
+}
+
+.legend__item--action:hover {
+	background: color-mix(in srgb, var(--ink) 8%, transparent);
+}
+
+.legend--selectable .legend__item--on {
+	color: var(--ink);
+	background: color-mix(in srgb, var(--slot-1) 13%, var(--surface));
+	border-color: color-mix(in srgb, var(--slot-1) 55%, var(--line));
+}
+
+.legend__item:disabled {
+	opacity: 1;
+}
+
+.legend__name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.legend__check {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	color: var(--slot-1);
+	font-size: 13px;
+	font-weight: 700;
 }
 
 .legend__item b {
@@ -981,6 +1058,40 @@ button {
   width: 10px;
   height: 10px;
   border-radius: 3px;
+}
+
+.list-scope {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin: 28px 0 12px;
+	padding: 10px 12px;
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 12px;
+}
+
+.list-scope__title {
+	color: var(--ink);
+	font-size: 14px;
+	font-weight: 600;
+}
+
+.list-scope__count {
+	color: var(--ink-muted);
+	font-size: 13px;
+}
+
+.list-scope__clear {
+	margin-left: auto;
+	color: var(--slot-1);
+	font-size: 13px;
+}
+
+@media (max-width: 520px) {
+	.legend--selectable {
+		grid-template-columns: 1fr;
+	}
 }
 
 /* категории */

@@ -1,4 +1,4 @@
-.PHONY: build web-build run test test-db lint migrate-up migrate-down db-up db-down
+.PHONY: build web-build run test test-db lint migrate-up migrate-down db-up db-down compose-up compose-down
 
 BIN := bot
 # Отдельная база: тесты делают truncate, и указывать сюда боевую нельзя —
@@ -12,13 +12,9 @@ build: web-build
 run:
 	go run ./cmd/bot
 
-# Тесты без базы: логика разбора, валидации, предохранителей, отчётов.
 test:
 	go test ./...
 
-# Полный прогон, включая интеграционные тесты на настоящем Postgres.
-# -p 1: база одна на все пакеты, параллельный прогон вычищал бы данные
-# соседей прямо посреди их тестов.
 test-db:
 	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" go test -race -p 1 ./...
 
@@ -36,9 +32,16 @@ migrate-up:
 migrate-down:
 	go run ./cmd/bot -migrate-down
 
-# Локальная база для разработки. На проде база ставится пакетом, без Docker.
+# Локальная база для разработки. На проде этот же сервис хранит данные в томе.
 db-up:
-	docker compose up -d
+	sudo docker compose up -d postgres
 
 db-down:
-	docker compose down
+	sudo docker compose down
+
+# Пересобрать бинарник и запустить бот с PostgreSQL в Docker Compose.
+compose-up: build
+	sudo docker compose up -d --build
+
+compose-down:
+	sudo docker compose down

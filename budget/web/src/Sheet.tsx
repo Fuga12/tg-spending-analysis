@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, Category, Conflict, Me, Tx } from "./api";
+import { api, BeneficiaryGroup, Category, Conflict, Me, Tx } from "./api";
 import { money, otherID, personLabel } from "./format";
 
 const KINDS = [
@@ -11,6 +11,7 @@ const KINDS = [
 type Props = {
   tx: Tx | null; // null — новая запись
   categories: Category[];
+	groups: BeneficiaryGroup[];
   /** Дата новой записи: сегодня в текущем месяце, иначе первое число открытого. */
   defaultDay: string;
   /** Сегодняшний день — для чипов «сегодня/вчера» и потолка даты. */
@@ -25,7 +26,7 @@ type Props = {
  * Карточка операции: лист снизу на телефоне, модалка на десктопе.
  * Здесь правится сумма и дата — то, чего в боте нет вовсе.
  */
-export default function Sheet({ tx, categories, defaultDay, today, me, onClose, onSaved, onDeleted }: Props) {
+export default function Sheet({ tx, categories, groups, defaultDay, today, me, onClose, onSaved, onDeleted }: Props) {
   const [amount, setAmount] = useState(tx?.amount ?? "");
   const [description, setDescription] = useState(tx?.description ?? "");
   const [categoryID, setCategoryID] = useState<number | null>(tx?.category_id ?? null);
@@ -51,6 +52,7 @@ export default function Sheet({ tx, categories, defaultDay, today, me, onClose, 
     { value: "payer" as const, label: personLabel(payerID, me) ?? "плательщику" },
     { value: "partner" as const, label: personLabel(otherID(payerID, me), me) ?? "партнёру" },
     { value: "both" as const, label: "нам" },
+	...groups.map((g) => ({ value: g.key, label: g.name })),
   ];
 
   // Сутки вперёд сервер разрешает (webapp.md §4): пусть и поле разрешает.
@@ -367,7 +369,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 /** Умолчание категории в терминах записи: адресат-человек — это payer или
  *  partner, смотря кто платит. */
-function categoryDefault(c: Category, payerID: number): "payer" | "partner" | "both" {
+function categoryDefault(c: Category, payerID: number): string {
   if (c.user_id === null) return c.beneficiary;
   return c.user_id === payerID ? "payer" : "partner";
 }

@@ -68,6 +68,7 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 	api.HandleFunc("GET /api/me", s.handleMe)
 	api.HandleFunc("DELETE /api/session", s.handleLogout)
 	api.HandleFunc("GET /api/categories", s.handleCategories)
+	api.HandleFunc("GET /api/beneficiary-groups", s.handleBeneficiaryGroups)
 	api.HandleFunc("GET /api/transactions", s.handleTransactions)
 	api.HandleFunc("GET /api/report/month", s.handleMonth)
 	api.HandleFunc("GET /api/report/daily", s.handleDaily)
@@ -77,6 +78,9 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 	api.HandleFunc("DELETE /api/transactions/{id}", s.handleDelete)
 	api.HandleFunc("PATCH /api/categories/{id}", s.handleCategoryPatch)
 	api.HandleFunc("POST /api/categories", s.handleCategoryCreate)
+	api.HandleFunc("POST /api/beneficiary-groups", s.handleBeneficiaryGroupCreate)
+	api.HandleFunc("PATCH /api/beneficiary-groups/{id}", s.handleBeneficiaryGroupPatch)
+	api.HandleFunc("DELETE /api/beneficiary-groups/{id}", s.handleBeneficiaryGroupDelete)
 	api.HandleFunc("GET /api/avatar/{id}", s.handleAvatar)
 	api.HandleFunc("PUT /api/avatar", s.handleAvatarSet)
 	api.HandleFunc("DELETE /api/avatar", s.handleAvatarClear)
@@ -91,6 +95,8 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 	api.HandleFunc("/api/report/months", methodNotAllowed)
 	api.HandleFunc("/api/transactions/{id}", methodNotAllowed)
 	api.HandleFunc("/api/categories/{id}", methodNotAllowed)
+	api.HandleFunc("/api/beneficiary-groups", methodNotAllowed)
+	api.HandleFunc("/api/beneficiary-groups/{id}", methodNotAllowed)
 	api.HandleFunc("/api/avatar", methodNotAllowed)
 	api.HandleFunc("/api/avatar/{id}", methodNotAllowed)
 	api.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
@@ -102,9 +108,9 @@ func New(cfg *config.Config, store *storage.Store, log *slog.Logger) (*Server, e
 	mux.HandleFunc("GET /auth", s.handleAuth)
 	mux.HandleFunc("/auth", methodNotAllowed)
 	for _, path := range []string{
-		"/api/me", "/api/session", "/api/categories",
+		"/api/me", "/api/session", "/api/categories", "/api/beneficiary-groups",
 		"/api/transactions", "/api/transactions/", "/api/report/month",
-		"/api/report/daily", "/api/report/months", "/api/categories/",
+		"/api/report/daily", "/api/report/months", "/api/categories/", "/api/beneficiary-groups/",
 		"/api/avatar", "/api/avatar/",
 	} {
 		mux.Handle(path, s.requireSession(api))

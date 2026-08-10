@@ -10,7 +10,13 @@ export class Conflict extends Error {
   }
 }
 
-export type Beneficiary = "payer" | "partner" | "both";
+export type Beneficiary = string;
+
+export type BeneficiaryGroup = {
+  id: number;
+  name: string;
+  key: string;
+};
 
 export type Category = {
   id: number;
@@ -46,7 +52,7 @@ export type Tx = {
   category_id: number | null;
   category: string;
   payer_id: number;
-  beneficiary: "payer" | "partner" | "both";
+  beneficiary: string;
   kind: "expense" | "income" | "transfer";
   spent_at: string;
   raw_text: string;
@@ -57,7 +63,7 @@ export type Tx = {
 
 export type TxPage = { items: Tx[]; total: number; has_more: boolean };
 
-export type Line = { id: number; name: string; amount: string; percent: number; delta?: string };
+export type Line = { id: number; key: string; name: string; amount: string; percent: number; delta?: string };
 
 export type DayPoint = { day: string; amount: string };
 export type MonthPoint = { year: number; month: number; amount: string };
@@ -75,6 +81,7 @@ export type MonthReport = {
   year: number;
   month: number;
   total: string;
+	recipient_total?: string;
   compare: Compare | null;
   categories: Line[];
   payers: Line[];
@@ -124,6 +131,17 @@ export const api = {
 
   categories: () => get<Category[]>("/api/categories"),
 
+  beneficiaryGroups: () => get<BeneficiaryGroup[]>("/api/beneficiary-groups"),
+
+  createBeneficiaryGroup: (name: string) =>
+    send<BeneficiaryGroup>("POST", "/api/beneficiary-groups", { name }),
+
+  patchBeneficiaryGroup: (id: number, name: string) =>
+    send<BeneficiaryGroup>("PATCH", `/api/beneficiary-groups/${id}`, { name }),
+
+  deleteBeneficiaryGroup: (id: number) =>
+    send<{ ok: boolean }>("DELETE", `/api/beneficiary-groups/${id}`, undefined),
+
   patchCategory: (
     id: number,
     body: { name: string; hint: string; beneficiary: string; user_id: number | null },
@@ -158,8 +176,11 @@ export const api = {
 
   restore: (id: number) => send<Tx>("PATCH", `/api/transactions/${id}`, { deleted: false }),
 
-  month: (year: number, month: number) =>
-    get<MonthReport>(`/api/report/month?year=${year}&month=${month}`),
+  month: (year: number, month: number, recipient = "") => {
+	const q = new URLSearchParams({ year: String(year), month: String(month) });
+	if (recipient) q.set("recipient", recipient);
+	return get<MonthReport>(`/api/report/month?${q}`);
+  },
 
   transactions: (params: Record<string, string | number | undefined>) => {
     const q = new URLSearchParams();

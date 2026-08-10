@@ -1,9 +1,5 @@
-# База для разработки и тестов. Порт 5433 — 5432 на этой машине уже занят
-# посторонним контейнером.
-#
-# Внимание: §14 плана запрещает Docker в этой итерации. Compose здесь поднимает
-# только базу, сам бот по-прежнему собирается в один бинарь и на проде живёт
-# под systemd (§12) — контейнеров в деплое нет.
+name: budget
+
 services:
   postgres:
     image: postgres:16
@@ -22,6 +18,23 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: strochka-budget-bot:local
+    container_name: budget_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    network_mode: host
+    volumes:
+      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 120s
 
 volumes:
   budget_pgdata:

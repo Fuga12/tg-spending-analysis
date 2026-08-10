@@ -31,6 +31,10 @@ const shutdownTimeout = 45 * time.Second
 // записи (§12).
 const backfillPeriod = 10 * time.Minute
 
+// botRetryPeriod — пауза между попытками подключиться к Telegram. Веб и БД
+// не должны быть недоступны только потому, что Telegram временно не отвечает.
+const botRetryPeriod = 30 * time.Second
+
 func main() {
 	migrateOnly := flag.Bool("migrate", false, "накатить миграции и выйти")
 	migrateDown := flag.Bool("migrate-down", false, "откатить одну миграцию и выйти")
@@ -105,30 +109,8 @@ func main() {
 		func(text string) { notifyOwner(text) }, log)
 	classifier := classify.NewService(store, llm, breaker, budget, log)
 
-	b, err := bot.New(cfg, bot.Deps{
-		Store:      store,
-		Classifier: classifier,
-		Breaker:    breaker,
-		Budget:     budget,
-	}, log)
-	if err != nil {
-		log.Error("бот", "err", err)
-		os.Exit(1)
-	}
-	notifyOwner = func(text string) {
-		if err := b.Send(cfg.OwnerID(), text); err != nil {
-			log.Error("не отправил уведомление владельцу", "err", err)
-		}
-	}
-
-	// Воркер добора: раз в 10 минут подбирает записи, которым не досталось
-	// категории (§12).
-	backfill := worker.New(store, classifier, breaker, budget, log)
-	backfillDone := make(chan struct{})
-	go backfill.Run(ctx, backfillPeriod, backfillDone)
-
-	// Веб поднимается, только если задан WEB_BASE_URL. Не задан — бот
-	// работает как работал (webapp.md §3).
+	// Веб не зависит от Telegram. Поднимаем его первым, чтобы временная
+	// недоступность Bot API не выключала просмотр и ручной ввод расходов.
 	var webSrv *web.Server
 	if cfg.WebEnabled() {
 		webSrv, err = web.New(cfg, store, log)
@@ -143,6 +125,40 @@ func main() {
 	} else {
 		log.Info("веб выключен: WEB_BASE_URL не задан")
 	}
+
+	var b *bot.Bot
+	for {
+		b, err = bot.New(cfg, bot.Deps{
+			Store:      store,
+			Classifier: classifier,
+			Breaker:    breaker,
+			Budget:     budget,
+		}, log)
+		if err == nil {
+			break
+		}
+		// Ошибка telebot содержит URL с токеном. Не пишем её в лог целиком.
+		log.Error("Telegram недоступен, повторю подключение", "через", botRetryPeriod)
+		select {
+		case <-ctx.Done():
+			if webSrv != nil {
+				webSrv.Shutdown()
+			}
+			return
+		case <-time.After(botRetryPeriod):
+		}
+	}
+	notifyOwner = func(text string) {
+		if err := b.Send(cfg.OwnerID(), text); err != nil {
+			log.Error("не отправил уведомление владельцу", "err", err)
+		}
+	}
+
+	// Воркер добора: раз в 10 минут подбирает записи, которым не досталось
+	// категории (§12).
+	backfill := worker.New(store, classifier, breaker, budget, log)
+	backfillDone := make(chan struct{})
+	go backfill.Run(ctx, backfillPeriod, backfillDone)
 
 	rem := reminder.New(cfg, store, b, log)
 	if err := rem.Start(); err != nil {

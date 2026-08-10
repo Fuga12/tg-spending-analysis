@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/Avatar.tsx","./src/Categories.tsx","./src/Charts.tsx","./src/Photo.tsx","./src/Sheet.tsx","./src/api.ts","./src/format.ts","./src/main.tsx"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/Avatar.tsx","./src/Categories.tsx","./src/Charts.tsx","./src/Groups.tsx","./src/Photo.tsx","./src/Sheet.tsx","./src/api.ts","./src/format.ts","./src/main.tsx"],"version":"5.9.3"}

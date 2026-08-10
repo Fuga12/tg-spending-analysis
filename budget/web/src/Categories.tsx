@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, Beneficiary, Category, Me } from "./api";
+import { api, BeneficiaryGroup, Category, Me } from "./api";
 
 /**
  * Варианты умолчания: два относительных и по одному на каждого участника.
@@ -8,7 +8,7 @@ import { api, Beneficiary, Category, Me } from "./api";
  * достаётся Уле, кто бы её ни купил. Относительными значениями это не
  * выражается, поэтому у категории есть отдельный адресат-человек.
  */
-function defaultOptions(me: Me | null) {
+function defaultOptions(me: Me | null, groups: BeneficiaryGroup[]) {
   const people = me
     ? [me.partner, { id: me.id, name: me.name, dative: me.dative }].filter(
         (p): p is NonNullable<typeof p> => p !== null,
@@ -18,14 +18,15 @@ function defaultOptions(me: Me | null) {
     { key: "payer", label: "себе" },
     { key: "both", label: "на двоих" },
     ...people.map((p) => ({ key: `user:${p.id}`, label: p.dative })),
+	...groups.map((g) => ({ key: g.key, label: g.name })),
   ];
 }
 
 const defaultKey = (c: { beneficiary: string; user_id: number | null }) =>
   c.user_id !== null ? `user:${c.user_id}` : c.beneficiary;
 
-const defaultLabel = (c: Category, me: Me | null) =>
-  defaultOptions(me).find((o) => o.key === defaultKey(c))?.label ?? "на двоих";
+const defaultLabel = (c: Category, me: Me | null, groups: BeneficiaryGroup[]) =>
+  defaultOptions(me, groups).find((o) => o.key === defaultKey(c))?.label ?? "на двоих";
 
 /**
  * Правка категорий. Названия и подсказки уходят прямо в JSON-схему запроса
@@ -38,11 +39,13 @@ const defaultLabel = (c: Category, me: Me | null) =>
 export default function Categories({
   categories,
   me,
+	groups,
   onClose,
   onSaved,
 }: {
   categories: Category[];
   me: Me | null;
+	groups: BeneficiaryGroup[];
   onClose: () => void;
   onSaved: (c: Category) => void;
 }) {
@@ -68,6 +71,7 @@ export default function Categories({
           <CategoryForm
             category={editing}
             me={me}
+			groups={groups}
             onCancel={() => {
               setEditing(null);
               setCreating(false);
@@ -85,7 +89,7 @@ export default function Categories({
                 <button key={c.id} className="cats__row" onClick={() => setEditing(c)}>
                   <span className="cats__name">
                     {c.name}
-                    <span className="cats__default">{defaultLabel(c, me)}</span>
+                    <span className="cats__default">{defaultLabel(c, me, groups)}</span>
                   </span>
                   <span className="cats__hint">{c.hint || "без подсказки"}</span>
                 </button>
@@ -104,11 +108,13 @@ export default function Categories({
 function CategoryForm({
   category,
   me,
+	groups,
   onCancel,
   onSaved,
 }: {
   category: Category | null;
   me: Me | null;
+	groups: BeneficiaryGroup[];
   onCancel: () => void;
   onSaved: (c: Category) => void;
 }) {
@@ -117,9 +123,9 @@ function CategoryForm({
   const [target, setTarget] = useState(
     category ? defaultKey(category) : "both",
   );
-  const options = defaultOptions(me);
+  const options = defaultOptions(me, groups);
   const userID = target.startsWith("user:") ? Number(target.slice(5)) : null;
-  const beneficiary: Beneficiary = userID !== null ? "payer" : (target as Beneficiary);
+	const beneficiary = userID !== null ? "payer" : target;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

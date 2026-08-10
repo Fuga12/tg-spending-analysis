@@ -60,8 +60,14 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "база не отвечает")
 		return
 	}
+	groups, err := s.store.BeneficiaryGroups(r.Context())
+	if err != nil {
+		s.log.Error("группы получателей", "err", err)
+		writeError(w, http.StatusInternalServerError, "база не отвечает")
+		return
+	}
 
-	p, err := s.buildPatch(patch, cats)
+	p, err := s.buildPatch(patch, cats, groups)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -153,6 +159,12 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "база не отвечает")
 		return
 	}
+	groups, err := s.store.BeneficiaryGroups(r.Context())
+	if err != nil {
+		s.log.Error("группы получателей", "err", err)
+		writeError(w, http.StatusInternalServerError, "база не отвечает")
+		return
+	}
 
 	amount, err := parseAmount(body.Amount)
 	if err != nil {
@@ -179,7 +191,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if beneficiary == "" {
 		beneficiary = classify.BenPayer
 	}
-	if !isBeneficiary(beneficiary) {
+	if !isBeneficiary(beneficiary, groups) {
 		writeError(w, http.StatusBadRequest, "не понял, на кого потрачено")
 		return
 	}
@@ -223,7 +235,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildPatch проверяет присланное и превращает в патч для хранилища.
-func (s *Server) buildPatch(in txPatch, cats []storage.Category) (storage.TransactionPatch, error) {
+func (s *Server) buildPatch(in txPatch, cats []storage.Category, groups []storage.BeneficiaryGroup) (storage.TransactionPatch, error) {
 	var out storage.TransactionPatch
 
 	if in.Amount != nil {
@@ -241,7 +253,7 @@ func (s *Server) buildPatch(in txPatch, cats []storage.Category) (storage.Transa
 		out.Description = &desc
 	}
 	if in.Beneficiary != nil {
-		if !isBeneficiary(*in.Beneficiary) {
+		if !isBeneficiary(*in.Beneficiary, groups) {
 			return out, errors.New("не понял, на кого потрачено")
 		}
 		out.Beneficiary = in.Beneficiary
@@ -374,8 +386,16 @@ func trimDescription(s string) string {
 	return strings.TrimSpace(string(r))
 }
 
-func isBeneficiary(s string) bool {
-	return s == classify.BenPayer || s == classify.BenPartner || s == classify.BenBoth
+func isBeneficiary(value string, groups []storage.BeneficiaryGroup) bool {
+	if value == classify.BenPayer || value == classify.BenPartner || value == classify.BenBoth {
+		return true
+	}
+	for _, g := range groups {
+		if value == g.Key() {
+			return true
+		}
+	}
+	return false
 }
 
 func isKind(s string) bool {
@@ -460,6 +480,12 @@ func (s *Server) handleCategoryPatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "база не отвечает")
 		return
 	}
+	groups, err := s.store.BeneficiaryGroups(r.Context())
+	if err != nil {
+		s.log.Error("группы получателей", "err", err)
+		writeError(w, http.StatusInternalServerError, "база не отвечает")
+		return
+	}
 	// Имена уходят в enum схемы, и одинаковых там быть не может.
 	for _, c := range cats {
 		if c.ID != int32(id) && strings.EqualFold(c.Name, name) {
@@ -469,7 +495,7 @@ func (s *Server) handleCategoryPatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	beneficiary := body.Beneficiary
-	if !isBeneficiary(beneficiary) {
+	if !isBeneficiary(beneficiary, groups) {
 		// Не прислали — оставляем как было.
 		for _, c := range cats {
 			if c.ID == int32(id) {
@@ -531,6 +557,12 @@ func (s *Server) handleCategoryCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "база не отвечает")
 		return
 	}
+	groups, err := s.store.BeneficiaryGroups(r.Context())
+	if err != nil {
+		s.log.Error("группы получателей", "err", err)
+		writeError(w, http.StatusInternalServerError, "база не отвечает")
+		return
+	}
 	for _, c := range cats {
 		if strings.EqualFold(c.Name, name) {
 			writeError(w, http.StatusBadRequest, "категория с таким названием уже есть")
@@ -545,7 +577,7 @@ func (s *Server) handleCategoryCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	beneficiary := body.Beneficiary
-	if !isBeneficiary(beneficiary) {
+	if !isBeneficiary(beneficiary, groups) {
 		beneficiary = classify.BenBoth
 	}
 
