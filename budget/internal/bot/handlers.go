@@ -21,13 +21,24 @@ const greeting = `Привет! Я веду общий бюджет.
 
 Формат — в /помощь.`
 
+// appHint — приписка к приветствию, когда приложение есть. Отдельно от
+// greeting: обещать отчёты и участников, пока их негде показать, нельзя.
+const appHint = "\n\nОтчёты, категории и участники — в приложении."
+
 const noAmountReply = "Не вижу сумму. Например: 600 лимонад"
 
-// noGroupReply — человек боту известен, но ни в какой группе не состоит.
+// noGroup — человек боту известен, но ни в какой группе не состоит.
 // Записывать его траты некуда: бюджет принадлежит группе, а не человеку.
-const noGroupReply = `Ты пока не в группе — записывать траты некуда.
-
-Создай свою в приложении или попроси администратора добавить тебя.`
+//
+// Совет зависит от того, есть ли уже приложение: посылать создавать группу
+// туда, куда нельзя попасть, — это тупик, а не подсказка.
+func noGroup(hasApp bool) string {
+	const head = "Ты пока не в группе — записывать траты некуда.\n\n"
+	if hasApp {
+		return head + "Создай свою в приложении или попроси администратора добавить тебя."
+	}
+	return head + "Попроси администратора группы добавить тебя."
+}
 
 func (b *Bot) onStart(c tele.Context) error {
 	ctx, cancel := b.ctx()
@@ -44,9 +55,15 @@ func (b *Bot) onStart(c tele.Context) error {
 		return c.Send("База не отвечает, попробуй ещё раз.")
 	}
 	if !ok {
-		return c.Send(noGroupReply)
+		return c.Send(noGroup(b.cfg.HasApp()))
 	}
-	return c.Send(greeting)
+
+	markup := appMarkup(b.cfg.AppURL)
+	text := greeting
+	if markup != nil {
+		text += appHint
+	}
+	return c.Send(text, sendOptions(markup)...)
 }
 
 // onText — основной сценарий: свободный текст превращается в траты (§9).
@@ -75,7 +92,7 @@ func (b *Bot) onText(c tele.Context) error {
 		return c.Send("База не отвечает, попробуй ещё раз.")
 	}
 	if !inGroup {
-		return c.Send(noGroupReply)
+		return c.Send(noGroup(b.cfg.HasApp()))
 	}
 	group := b.store.ForGroup(member.GroupID)
 
@@ -114,7 +131,7 @@ func (b *Bot) onText(c tele.Context) error {
 		}
 		// Ошибка отправки одного ответа не должна лишать пользователя
 		// остальных: транзакции уже в базе.
-		if err := c.Send(transactionLine(tx, now, b.cfg.TZ)); err != nil {
+		if err := c.Send(transactionLine(tx, now, b.cfg.TZ), txMarkup(tx.ID)); err != nil {
 			b.log.Error("не отправил ответ по трате", "err", err, "tx", tx.ID)
 		}
 	}

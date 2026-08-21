@@ -91,3 +91,52 @@ func TestParseHHMM(t *testing.T) {
 		}
 	}
 }
+
+func TestAppURL(t *testing.T) {
+	base := func(t *testing.T) {
+		t.Helper()
+		t.Setenv("BOT_TOKEN", "t")
+		t.Setenv("DATABASE_URL", "postgres://x")
+		t.Setenv("YANDEX_API_KEY", "k")
+		t.Setenv("YANDEX_FOLDER_ID", "f")
+	}
+
+	t.Run("без APP_URL приложения просто нет", func(t *testing.T) {
+		base(t)
+		t.Setenv("APP_URL", "")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("конфиг: %v", err)
+		}
+		if cfg.HasApp() {
+			t.Error("без APP_URL кнопок быть не должно")
+		}
+	})
+
+	t.Run("хвостовой слэш срезается", func(t *testing.T) {
+		base(t)
+		t.Setenv("APP_URL", " https://budget.example.com/ ")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("конфиг: %v", err)
+		}
+		if cfg.AppURL != "https://budget.example.com" || !cfg.HasApp() {
+			t.Errorf("APP_URL = %q, ожидался без хвостового слэша", cfg.AppURL)
+		}
+	})
+
+	// Telegram просто не откроет приложение по http, и кнопка будет молча
+	// ничего не делать. Лучше не стартовать.
+	for _, bad := range []string{"http://budget.example.com", "budget.example.com", "ftp://x"} {
+		t.Run("отказ: "+bad, func(t *testing.T) {
+			base(t)
+			t.Setenv("APP_URL", bad)
+
+			if _, err := Load(); err == nil {
+				t.Errorf("%q не должно приниматься: Mini App работает только по https", bad)
+			}
+		})
+	}
+}

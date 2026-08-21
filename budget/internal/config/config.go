@@ -21,6 +21,12 @@ type Config struct {
 	TZ             *time.Location
 	ReminderAt     string // "HH:MM"
 
+	// AppURL — адрес Mini App. Пустой означает, что приложения ещё нет:
+	// бот тогда не показывает ни кнопку под приветствием, ни кнопку меню.
+	// Telegram открывает Mini App только по https, поэтому другой схемы тут
+	// быть не может.
+	AppURL string
+
 	YandexAPIKey          string
 	YandexFolderID        string
 	LLMBaseURL            string
@@ -39,6 +45,10 @@ type Config struct {
 // WhitelistEnabled — ограничен ли доступ списком. Пустой список означает
 // открытого бота.
 func (c *Config) WhitelistEnabled() bool { return len(c.AllowedUserIDs) > 0 }
+
+// HasApp — есть ли куда вести из бота. Пока приложения нет, кнопки не
+// показываются: кнопка, ведущая в никуда, хуже её отсутствия.
+func (c *Config) HasApp() bool { return c.AppURL != "" }
 
 // OwnerID — первый id из whitelist, ему уходят служебные уведомления.
 // Ноль означает, что владелец не задан и отправлять их некому.
@@ -77,6 +87,13 @@ func Load() (*Config, error) {
 		LLMModel:       envDefault("LLM_MODEL", "yandexgpt/rc"),
 		ReminderAt:     envDefault("REMINDER_AT", "21:00"),
 		BackupDir:      os.Getenv("BACKUP_DIR"),
+		AppURL:         strings.TrimRight(strings.TrimSpace(os.Getenv("APP_URL")), "/"),
+	}
+
+	// Ошибиться схемой легко, а последствие немое: Telegram просто не откроет
+	// приложение, и кнопка будет молча ничего не делать.
+	if c.AppURL != "" && !strings.HasPrefix(c.AppURL, "https://") {
+		return nil, fmt.Errorf("APP_URL: Telegram открывает Mini App только по https, получено %q", c.AppURL)
 	}
 
 	var missing []string

@@ -77,7 +77,10 @@ func (b *Bot) Send(userID int64, text string) error {
 }
 
 // Start запускает long polling. Блокирует до Shutdown.
-func (b *Bot) Start() { b.tb.Start() }
+func (b *Bot) Start() {
+	b.setupMenuButton()
+	b.tb.Start()
+}
 
 // Shutdown ждёт, пока договорят уже начатые обработчики, и только потом гасит
 // клиента: Stop рвёт исходящие запросы к Telegram, так что порядок важен.
@@ -134,6 +137,31 @@ func (b *Bot) classifyCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 2*b.cfg.LLMTimeout+10*time.Second)
 }
 
+// setupMenuButton вешает Mini App на кнопку меню рядом с полем ввода.
+//
+// Ставится один раз при старте и на всех приватных чатов сразу — поэтому
+// Raw, а не SetMenuButton: тот требует конкретного собеседника, а нам нужно
+// умолчание для всех. Неудача не должна мешать боту работать: без кнопки он
+// по-прежнему записывает траты.
+func (b *Bot) setupMenuButton() {
+	if !b.cfg.HasApp() {
+		b.log.Info("кнопка меню не ставится: APP_URL не задан")
+		return
+	}
+	_, err := b.tb.Raw("setChatMenuButton", map[string]any{
+		"menu_button": tele.MenuButton{
+			Type:   tele.MenuButtonWebApp,
+			Text:   "Бюджет",
+			WebApp: &tele.WebApp{URL: b.cfg.AppURL},
+		},
+	})
+	if err != nil {
+		b.log.Error("не поставил кнопку меню", "err", err)
+		return
+	}
+	b.log.Info("кнопка меню ведёт в приложение", "url", b.cfg.AppURL)
+}
+
 func (b *Bot) routes() {
 	// Две команды и текст — вся поверхность бота. Всё, что можно показать
 	// интерфейсом, живёт в приложении.
@@ -157,5 +185,7 @@ func (b *Bot) routes() {
 		}
 	}
 
+	b.tb.Handle(btnDelete, b.onDelete)
+	b.tb.Handle(btnRestore, b.onRestore)
 	b.tb.Handle(tele.OnText, b.onText)
 }
