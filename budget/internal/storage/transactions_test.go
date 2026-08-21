@@ -11,29 +11,27 @@ import (
 func TestInsertAndReadTransaction(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
+	g, members := testGroup(t, s, 3)
 
-	if err := s.EnsureUser(ctx, 1, "Тест"); err != nil {
-		t.Fatalf("пользователь: %v", err)
-	}
-	cats, _ := s.Categories(ctx)
+	cats, _ := g.Categories(ctx)
 	food := categoryID(t, cats, "Продукты")
 
 	spent := time.Now().AddDate(0, 0, -1)
-	id, err := s.InsertTransaction(ctx, Transaction{
-		PayerID:     1,
-		Beneficiary: "both",
-		Kind:        "expense",
-		Amount:      decimal.RequireFromString("1200.50"),
-		Description: "пятёрочка",
-		CategoryID:  &food,
-		RawText:     "вчера пятёрочка 1200,50",
-		SpentAt:     spent,
+	id, err := g.InsertTransaction(ctx, Transaction{
+		PayerMemberID: members[0].ID,
+		Recipients:    memberIDs(members, 1, 2),
+		Kind:          KindExpense,
+		Amount:        decimal.RequireFromString("1200.50"),
+		Description:   "пятёрочка",
+		CategoryID:    &food,
+		RawText:       "вчера пятёрочка 1200,50",
+		SpentAt:       spent,
 	})
 	if err != nil {
 		t.Fatalf("вставка: %v", err)
 	}
 
-	tx, err := s.Transaction(ctx, id)
+	tx, err := g.Transaction(ctx, id)
 	if err != nil {
 		t.Fatalf("чтение: %v", err)
 	}
@@ -49,17 +47,109 @@ func TestInsertAndReadTransaction(t *testing.T) {
 	if tx.NeedsClassification {
 		t.Error("флаг «разобрать позже» не должен стоять")
 	}
+	if len(tx.Recipients) != 2 ||
+		tx.Recipients[0] != members[1].ID || tx.Recipients[1] != members[2].ID {
+		t.Errorf("получатели = %v, ожидались %v", tx.Recipients, memberIDs(members, 1, 2))
+	}
+}
+
+func TestEmptyRecipientsMeanWholeGroup(t *testing.T) {
+	// Пустой список — это «на всю группу», а не потерянные данные: состав
+	// группы меняется, а смысл «общая трата» — нет.
+	s := testStore(t)
+	ctx := context.Background()
+	g, members := testGroup(t, s, 4)
+
+	id, err := g.InsertTransaction(ctx, Transaction{
+		PayerMemberID: members[0].ID,
+		Kind:          KindExpense,
+		Amount:        decimal.RequireFromString("1000"),
+		Description:   "продукты",
+		RawText:       "продукты 1000",
+		SpentAt:       time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
+	tx, err := g.Transaction(ctx, id)
+	if err != nil {
+		t.Fatalf("чтение: %v", err)
+	}
+	if len(tx.Recipients) != 0 {
+		t.Errorf("получатели = %v, ожидался пустой список", tx.Recipients)
+	}
+}
+
+func TestRecipientFromOtherGroupIsRejected(t *testing.T) {
+	// Главная защита от худшего бага мультитенантности: участник чужой группы
+	// не может оказаться получателем нашей траты, даже если его id подставили.
+	s := testStore(t)
+	ctx := context.Background()
+	g, members := testGroup(t, s, 2)
+
+	if err := s.EnsureUser(ctx, 99, "Чужой"); err != nil {
+		t.Fatalf("пользователь: %v", err)
+	}
+	_, outsider, err := s.CreateGroup(ctx, "Другая", 99)
+	if err != nil {
+		t.Fatalf("вторая группа: %v", err)
+	}
+
+	id, err := g.InsertTransaction(ctx, Transaction{
+		PayerMemberID: members[0].ID,
+		Recipients:    []int64{members[1].ID, outsider.ID},
+		Kind:          KindExpense,
+		Amount:        decimal.RequireFromString("500"),
+		Description:   "тест",
+		RawText:       "тест 500",
+		SpentAt:       time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
+	tx, _ := g.Transaction(ctx, id)
+	if len(tx.Recipients) != 1 || tx.Recipients[0] != members[1].ID {
+		t.Errorf("получатели = %v, ожидался только свой участник %d", tx.Recipients, members[1].ID)
+	}
+}
+
+func TestPayerFromOtherGroupIsRejected(t *testing.T) {
+	// Тот же запрет на уровне схемы: составной внешний ключ не даёт записать
+	// трату на плательщика из чужой группы.
+	s := testStore(t)
+	ctx := context.Background()
+	g, _ := testGroup(t, s, 2)
+
+	if err := s.EnsureUser(ctx, 99, "Чужой"); err != nil {
+		t.Fatalf("пользователь: %v", err)
+	}
+	_, outsider, err := s.CreateGroup(ctx, "Другая", 99)
+	if err != nil {
+		t.Fatalf("вторая группа: %v", err)
+	}
+
+	_, err = g.InsertTransaction(ctx, Transaction{
+		PayerMemberID: outsider.ID,
+		Kind:          KindExpense,
+		Amount:        decimal.RequireFromString("500"),
+		Description:   "тест",
+		RawText:       "тест 500",
+		SpentAt:       time.Now(),
+	})
+	if err == nil {
+		t.Error("чужой плательщик не должен проходить внешний ключ")
+	}
 }
 
 func TestDegradedTransactionHasNoCategory(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
-	mustUser(t, s, 1)
+	g, members := testGroup(t, s, 1)
 
-	id, err := s.InsertTransaction(ctx, Transaction{
-		PayerID:             1,
-		Beneficiary:         "payer",
-		Kind:                "expense",
+	id, err := g.InsertTransaction(ctx, Transaction{
+		PayerMemberID:       members[0].ID,
+		Recipients:          memberIDs(members, 0),
+		Kind:                KindExpense,
 		Amount:              decimal.RequireFromString("600"),
 		Description:         "лимонад",
 		RawText:             "600 лимонад",
@@ -70,7 +160,7 @@ func TestDegradedTransactionHasNoCategory(t *testing.T) {
 		t.Fatalf("вставка деградированной записи: %v", err)
 	}
 
-	tx, err := s.Transaction(ctx, id)
+	tx, err := g.Transaction(ctx, id)
 	if err != nil {
 		t.Fatalf("чтение: %v", err)
 	}
@@ -80,16 +170,84 @@ func TestDegradedTransactionHasNoCategory(t *testing.T) {
 }
 
 func TestAnyoneCanEditTransaction(t *testing.T) {
+	// Бюджет общий: править чужую запись разрешено любому участнику.
 	s := testStore(t)
 	ctx := context.Background()
-	mustUser(t, s, 1)
-	mustUser(t, s, 2)
+	g, members := testGroup(t, s, 3)
 
-	cats, _ := s.Categories(ctx)
-	taxi := categoryID(t, cats, "Такси")
+	id, err := g.InsertTransaction(ctx, Transaction{
+		PayerMemberID: members[0].ID,
+		Recipients:    memberIDs(members, 0),
+		Kind:          KindExpense,
+		Amount:        decimal.RequireFromString("450"),
+		Description:   "такси",
+		RawText:       "такси 450",
+		SpentAt:       time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
 
-	id, err := s.InsertTransaction(ctx, Transaction{
-		PayerID: 1, Beneficiary: "payer", Kind: "expense",
+	ok, err := g.SetRecipients(ctx, id, memberIDs(members, 1, 2))
+	if err != nil || !ok {
+		t.Fatalf("смена получателей: ok=%v err=%v", ok, err)
+	}
+	tx, _ := g.Transaction(ctx, id)
+	if len(tx.Recipients) != 2 {
+		t.Errorf("получатели = %v, ожидались двое", tx.Recipients)
+	}
+
+	// Пустой список стирает прежних: трата стала общей.
+	if ok, err := g.SetRecipients(ctx, id, nil); err != nil || !ok {
+		t.Fatalf("сброс получателей: ok=%v err=%v", ok, err)
+	}
+	tx, _ = g.Transaction(ctx, id)
+	if len(tx.Recipients) != 0 {
+		t.Errorf("получатели = %v, ожидался пустой список", tx.Recipients)
+	}
+}
+
+func TestMarkForReviewClearsQueueButFlagsRecord(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	g, members := testGroup(t, s, 1)
+
+	cats, _ := g.Categories(ctx)
+	other := categoryID(t, cats, "Прочее")
+
+	id, err := g.InsertTransaction(ctx, Transaction{
+		PayerMemberID: members[0].ID, Kind: KindExpense,
+		Amount: decimal.RequireFromString("600"), Description: "лимонад",
+		RawText: "600 лимонад", NeedsClassification: true, SpentAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
+
+	if ok, err := g.MarkForReview(ctx, id, other); err != nil || !ok {
+		t.Fatalf("простановка вслепую: ok=%v err=%v", ok, err)
+	}
+	tx, _ := g.Transaction(ctx, id)
+	if tx.NeedsClassification {
+		t.Error("после простановки категории запись должна уйти из очереди")
+	}
+	if !tx.NeedsReview {
+		t.Error("категорию выбрал не человек — запись обязана быть помечена на проверку")
+	}
+
+	// Повторно закрывать уже закрытую запись нечего.
+	if ok, _ := g.MarkForReview(ctx, id, other); ok {
+		t.Error("запись вне очереди не должна перезакрываться")
+	}
+}
+
+func TestDeleteIsSoftAndReversible(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	g, members := testGroup(t, s, 1)
+
+	id, err := g.InsertTransaction(ctx, Transaction{
+		PayerMemberID: members[0].ID, Recipients: memberIDs(members, 0), Kind: KindExpense,
 		Amount: decimal.RequireFromString("450"), Description: "такси",
 		RawText: "такси 450", SpentAt: time.Now(),
 	})
@@ -97,70 +255,14 @@ func TestAnyoneCanEditTransaction(t *testing.T) {
 		t.Fatalf("вставка: %v", err)
 	}
 
-	// Бюджет общий: править запись партнёра разрешено обоим.
-	for _, check := range []struct {
-		name string
-		call func() (bool, error)
-	}{
-		{"бенефициар", func() (bool, error) { return s.SetBeneficiary(ctx, id, "both") }},
-		{"категория", func() (bool, error) { return s.SetCategory(ctx, id, taxi) }},
-	} {
-		ok, err := check.call()
-		if err != nil {
-			t.Fatalf("%s: %v", check.name, err)
-		}
-		if !ok {
-			t.Errorf("%s: править чужую трату разрешено", check.name)
-		}
-	}
-	tx, _ := s.Transaction(ctx, id)
-	if tx.Beneficiary != "both" {
-		t.Errorf("бенефициар = %q, ожидался both", tx.Beneficiary)
-	}
-}
-
-func TestSetCategoryClearsNeedsClassification(t *testing.T) {
-	s := testStore(t)
-	ctx := context.Background()
-	mustUser(t, s, 1)
-
-	cats, _ := s.Categories(ctx)
-	food := categoryID(t, cats, "Продукты")
-
-	id, _ := s.InsertTransaction(ctx, Transaction{
-		PayerID: 1, Beneficiary: "payer", Kind: "expense",
-		Amount: decimal.RequireFromString("600"), Description: "лимонад",
-		RawText: "600 лимонад", NeedsClassification: true, SpentAt: time.Now(),
-	})
-
-	if ok, err := s.SetCategory(ctx, id, food); err != nil || !ok {
-		t.Fatalf("смена категории: ok=%v err=%v", ok, err)
-	}
-	tx, _ := s.Transaction(ctx, id)
-	if tx.NeedsClassification {
-		t.Error("после ручной категории флаг «разобрать позже» должен сниматься")
-	}
-}
-
-func TestDeleteIsSoftAndHidesTransaction(t *testing.T) {
-	s := testStore(t)
-	ctx := context.Background()
-	mustUser(t, s, 1)
-
-	id, _ := s.InsertTransaction(ctx, Transaction{
-		PayerID: 1, Beneficiary: "payer", Kind: "expense",
-		Amount: decimal.RequireFromString("450"), Description: "такси",
-		RawText: "такси 450", SpentAt: time.Now(),
-	})
-
-	if ok, err := s.DeleteTransaction(ctx, id); err != nil || !ok {
+	if ok, err := g.DeleteTransaction(ctx, id); err != nil || !ok {
 		t.Fatalf("удаление: ok=%v err=%v", ok, err)
 	}
-	if _, err := s.Transaction(ctx, id); err == nil {
+	if _, err := g.Transaction(ctx, id); err == nil {
 		t.Error("удалённая трата не должна читаться")
 	}
 
-	// Но строка осталась: удаление только мягкое (§3).
+	// Строка осталась: удаление только мягкое (§3).
 	var deleted int
 	if err := s.pool.QueryRow(ctx,
 		`select count(*) from transactions where id = $1 and deleted_at is not null`, id).Scan(&deleted); err != nil {
@@ -170,19 +272,56 @@ func TestDeleteIsSoftAndHidesTransaction(t *testing.T) {
 		t.Error("строка должна остаться в базе с проставленным deleted_at")
 	}
 
-	// Повторное удаление ничего не меняет.
-	if ok, _ := s.DeleteTransaction(ctx, id); ok {
+	// Повторное удаление ничего не меняет, а вернуть можно.
+	if ok, _ := g.DeleteTransaction(ctx, id); ok {
 		t.Error("повторное удаление не должно проходить")
+	}
+	if ok, err := g.RestoreTransaction(ctx, id); err != nil || !ok {
+		t.Fatalf("возврат: ok=%v err=%v", ok, err)
+	}
+	if _, err := g.Transaction(ctx, id); err != nil {
+		t.Errorf("возвращённая трата должна читаться: %v", err)
+	}
+}
+
+func TestTransactionIsInvisibleFromAnotherGroup(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	g, members := testGroup(t, s, 1)
+
+	id, err := g.InsertTransaction(ctx, Transaction{
+		PayerMemberID: members[0].ID, Kind: KindExpense,
+		Amount: decimal.RequireFromString("450"), Description: "такси",
+		RawText: "такси 450", SpentAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
+
+	if err := s.EnsureUser(ctx, 99, "Чужой"); err != nil {
+		t.Fatalf("пользователь: %v", err)
+	}
+	other, _, err := s.CreateGroup(ctx, "Другая", 99)
+	if err != nil {
+		t.Fatalf("вторая группа: %v", err)
+	}
+	og := s.ForGroup(other.ID)
+
+	if _, err := og.Transaction(ctx, id); err == nil {
+		t.Error("чужая трата не должна читаться")
+	}
+	if ok, _ := og.DeleteTransaction(ctx, id); ok {
+		t.Error("чужую трату не должно быть возможно удалить")
 	}
 }
 
 func TestAmountMustBePositive(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
-	mustUser(t, s, 1)
+	g, members := testGroup(t, s, 1)
 
-	_, err := s.InsertTransaction(ctx, Transaction{
-		PayerID: 1, Beneficiary: "payer", Kind: "expense",
+	_, err := g.InsertTransaction(ctx, Transaction{
+		PayerMemberID: members[0].ID, Kind: KindExpense,
 		Amount: decimal.Zero, Description: "тест", RawText: "0 тест", SpentAt: time.Now(),
 	})
 	if err == nil {
@@ -190,23 +329,16 @@ func TestAmountMustBePositive(t *testing.T) {
 	}
 }
 
-func mustUser(t *testing.T, s *Store, id int64) {
-	t.Helper()
-	if err := s.EnsureUser(context.Background(), id, "Тест"); err != nil {
-		t.Fatalf("пользователь: %v", err)
-	}
-}
-
 func TestExpensesFiltersPeriodKindAndDeleted(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
-	mustUser(t, s, 1)
+	g, members := testGroup(t, s, 1)
 
 	now := time.Now()
 	insert := func(kind string, amount string, spentAt time.Time, deleted bool) int64 {
 		t.Helper()
-		id, err := s.InsertTransaction(ctx, Transaction{
-			PayerID: 1, Beneficiary: "both", Kind: kind,
+		id, err := g.InsertTransaction(ctx, Transaction{
+			PayerMemberID: members[0].ID, Kind: kind,
 			Amount: decimal.RequireFromString(amount), Description: "тест",
 			RawText: "тест", SpentAt: spentAt,
 		})
@@ -214,22 +346,22 @@ func TestExpensesFiltersPeriodKindAndDeleted(t *testing.T) {
 			t.Fatalf("вставка: %v", err)
 		}
 		if deleted {
-			if _, err := s.DeleteTransaction(ctx, id); err != nil {
+			if _, err := g.DeleteTransaction(ctx, id); err != nil {
 				t.Fatalf("удаление: %v", err)
 			}
 		}
 		return id
 	}
 
-	insert("expense", "1000", now, false)
-	insert("expense", "2000", now, true)                    // удалённая
-	insert("transfer", "5000", now, false)                  // перевод — не расход
-	insert("income", "90000", now, false)                   // доход — не расход
-	insert("expense", "700", now.AddDate(0, 0, -40), false) // другой месяц
+	insert(KindExpense, "1000", now, false)
+	insert(KindExpense, "2000", now, true)                    // удалённая
+	insert(KindTransfer, "5000", now, false)                  // перевод — не расход
+	insert(KindIncome, "90000", now, false)                   // доход — не расход
+	insert(KindExpense, "700", now.AddDate(0, 0, -40), false) // другой месяц
 
 	from := now.AddDate(0, 0, -7)
 	to := now.AddDate(0, 0, 1)
-	rows, err := s.Expenses(ctx, from, to)
+	rows, err := g.Expenses(ctx, from, to)
 	if err != nil {
 		t.Fatalf("расходы: %v", err)
 	}
@@ -238,24 +370,69 @@ func TestExpensesFiltersPeriodKindAndDeleted(t *testing.T) {
 	}
 }
 
-func TestPendingClassification(t *testing.T) {
+func TestExpensesDoNotLeakBetweenGroups(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
-	mustUser(t, s, 1)
+	g, members := testGroup(t, s, 1)
 
-	cats, _ := s.Categories(ctx)
+	now := time.Now()
+	if _, err := g.InsertTransaction(ctx, Transaction{
+		PayerMemberID: members[0].ID, Kind: KindExpense,
+		Amount: decimal.RequireFromString("1000"), Description: "тест",
+		RawText: "тест", SpentAt: now,
+	}); err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
+
+	if err := s.EnsureUser(ctx, 99, "Чужой"); err != nil {
+		t.Fatalf("пользователь: %v", err)
+	}
+	other, otherMember, err := s.CreateGroup(ctx, "Другая", 99)
+	if err != nil {
+		t.Fatalf("вторая группа: %v", err)
+	}
+	og := s.ForGroup(other.ID)
+	if _, err := og.InsertTransaction(ctx, Transaction{
+		PayerMemberID: otherMember.ID, Kind: KindExpense,
+		Amount: decimal.RequireFromString("55"), Description: "чужое",
+		RawText: "чужое", SpentAt: now,
+	}); err != nil {
+		t.Fatalf("вставка в чужую группу: %v", err)
+	}
+
+	from, to := now.AddDate(0, 0, -1), now.AddDate(0, 0, 1)
+	rows, err := g.Expenses(ctx, from, to)
+	if err != nil {
+		t.Fatalf("расходы: %v", err)
+	}
+	if len(rows) != 1 || !rows[0].Amount.Equal(decimal.RequireFromString("1000")) {
+		t.Errorf("расходы группы = %+v, чужие траты в них попасть не должны", rows)
+	}
+}
+
+func TestPendingClassificationCarriesGroupAndPayer(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	g, members := testGroup(t, s, 2)
+
+	cats, _ := g.Categories(ctx)
 	food := categoryID(t, cats, "Продукты")
 
-	id, _ := s.InsertTransaction(ctx, Transaction{
-		PayerID: 1, Beneficiary: "payer", Kind: "expense",
+	id, err := g.InsertTransaction(ctx, Transaction{
+		PayerMemberID: members[1].ID, Kind: KindExpense,
 		Amount: decimal.RequireFromString("600"), Description: "лимонад",
 		RawText: "600 лимонад", NeedsClassification: true, SpentAt: time.Now(),
 	})
-	_, _ = s.InsertTransaction(ctx, Transaction{
-		PayerID: 1, Beneficiary: "payer", Kind: "expense",
+	if err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
+	if _, err := g.InsertTransaction(ctx, Transaction{
+		PayerMemberID: members[0].ID, Kind: KindExpense,
 		Amount: decimal.RequireFromString("450"), Description: "такси",
 		RawText: "такси 450", CategoryID: &food, SpentAt: time.Now(),
-	})
+	}); err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
 
 	pending, err := s.PendingClassification(ctx, 20)
 	if err != nil {
@@ -267,12 +444,74 @@ func TestPendingClassification(t *testing.T) {
 	if pending[0].RawText != "600 лимонад" {
 		t.Errorf("raw_text = %q — воркеру нужен исходный текст", pending[0].RawText)
 	}
+	// Воркер обходит очередь всех групп: без group_id ему негде взять
+	// категории, а без user_id — личный словарь плательщика.
+	if pending[0].GroupID != g.GroupID() {
+		t.Errorf("group_id = %d, ожидался %d", pending[0].GroupID, g.GroupID())
+	}
+	if pending[0].PayerUserID != members[1].UserID {
+		t.Errorf("payer user_id = %d, ожидался %d", pending[0].PayerUserID, members[1].UserID)
+	}
 
-	// После простановки категории запись из очереди уходит.
-	if ok, err := s.SetCategory(ctx, id, food); err != nil || !ok {
-		t.Fatalf("простановка категории: ok=%v err=%v", ok, err)
+	// После разбора запись из очереди уходит.
+	ok, err := g.ApplyClassification(ctx, id, &food, KindExpense, time.Now())
+	if err != nil || !ok {
+		t.Fatalf("разбор: ok=%v err=%v", ok, err)
 	}
 	if pending, _ = s.PendingClassification(ctx, 20); len(pending) != 0 {
 		t.Errorf("в очереди осталось %d записей, ожидалось 0", len(pending))
+	}
+}
+
+func TestApplyClassificationClearsRecipientsOnTransfer(t *testing.T) {
+	// Перевод — не трата: получателя у него нет, и оставлять того, кого
+	// проставил деградированный путь, нельзя.
+	s := testStore(t)
+	ctx := context.Background()
+	g, members := testGroup(t, s, 2)
+
+	id, err := g.InsertTransaction(ctx, Transaction{
+		PayerMemberID: members[0].ID, Recipients: memberIDs(members, 0), Kind: KindExpense,
+		Amount: decimal.RequireFromString("5000"), Description: "5к",
+		RawText: "скинул 5к", NeedsClassification: true, SpentAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
+
+	if ok, err := g.ApplyClassification(ctx, id, nil, KindTransfer, time.Now()); err != nil || !ok {
+		t.Fatalf("разбор: ok=%v err=%v", ok, err)
+	}
+	tx, _ := g.Transaction(ctx, id)
+	if tx.Kind != KindTransfer {
+		t.Errorf("вид = %q, ожидался перевод", tx.Kind)
+	}
+	if len(tx.Recipients) != 0 {
+		t.Errorf("получатели перевода = %v, ожидался пустой список", tx.Recipients)
+	}
+}
+
+func TestHasRecordedOnLooksAtPerson(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	g, members := testGroup(t, s, 2)
+
+	now := time.Now()
+	if _, err := g.InsertTransaction(ctx, Transaction{
+		PayerMemberID: members[0].ID, Kind: KindExpense,
+		Amount: decimal.RequireFromString("100"), Description: "тест",
+		RawText: "тест", SpentAt: now,
+	}); err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
+
+	from, to := now.Add(-time.Hour), now.Add(time.Hour)
+	has, err := s.HasRecordedOn(ctx, members[0].UserID, from, to)
+	if err != nil || !has {
+		t.Errorf("писавший сегодня = %v (%v), ожидалось true", has, err)
+	}
+	has, err = s.HasRecordedOn(ctx, members[1].UserID, from, to)
+	if err != nil || has {
+		t.Errorf("молчавший сегодня = %v (%v), ожидалось false", has, err)
 	}
 }

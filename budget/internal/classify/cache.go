@@ -33,7 +33,7 @@ var stopWords = map[string]bool{
 // Второе возвращаемое значение — сработал ли путь.
 func (s *Service) resolveFromCache(
 	ctx context.Context,
-	userID int64,
+	sc Scope,
 	text string,
 	amounts []decimal.Decimal,
 	cats []storage.Category,
@@ -56,7 +56,7 @@ func (s *Service) resolveFromCache(
 		return nil, false, nil
 	}
 
-	hits, err := s.dict.LookupWords(ctx, userID, words)
+	hits, err := sc.Dict.LookupWords(ctx, sc.UserID, words)
 	if err != nil {
 		return nil, false, err
 	}
@@ -76,11 +76,6 @@ func (s *Service) resolveFromCache(
 		return nil, false, nil
 	}
 
-	ben := best.Beneficiary
-	if ben == "" {
-		ben = cat.BeneficiaryFor(userID)
-	}
-
 	id := cat.ID
 	return &Result{
 		Source: SourceCache,
@@ -88,7 +83,6 @@ func (s *Service) resolveFromCache(
 			Amount:      amounts[0],
 			Description: description,
 			CategoryID:  &id,
-			Beneficiary: ben,
 			Kind:        KindExpense,
 			DaysAgo:     0,
 			// В кэш возвращаются только слова, которые и так указывали на

@@ -12,15 +12,15 @@ import (
 // и учить по нему словарь нельзя (plan.md §8).
 const maxRememberedWords = 3
 
-// WordWriter — то, что нужно от хранилища, чтобы запомнить правку.
+// WordWriter — то, что нужно от хранилища группы, чтобы запомнить правку.
 type WordWriter interface {
-	UpsertWord(ctx context.Context, userID int64, word string, categoryID int32, beneficiary, source string) error
+	UpsertWord(ctx context.Context, userID int64, word string, categoryID int32, memberID *int64, source string) error
 }
 
 // RememberManual запоминает ручную правку в личном словаре.
 //
-// Правило одно на бота и на веб: два интерфейса правят одни и те же записи,
-// и если словарь учится по-разному, поведение быстрого пути начинает
+// Правило одно на бота и на приложение: два интерфейса правят одни и те же
+// записи, и если словарь учится по-разному, поведение быстрого пути начинает
 // зависеть от того, где нажали кнопку (webapp.md §0).
 func RememberManual(ctx context.Context, w WordWriter, tx storage.Transaction, log *slog.Logger) {
 	if tx.CategoryID == nil || tx.Kind != KindExpense {
@@ -37,8 +37,10 @@ func RememberManual(ctx context.Context, w WordWriter, tx storage.Transaction, l
 	if len(words) == 0 || len(words) > maxRememberedWords {
 		return
 	}
+	// Получателя словарь пока не запоминает: модель его не определяет, а
+	// разложить трату по участникам можно только руками (фаза 2).
 	for _, word := range words {
-		if err := w.UpsertWord(ctx, tx.PayerID, word, *tx.CategoryID, tx.Beneficiary, storage.SourceManual); err != nil {
+		if err := w.UpsertWord(ctx, tx.PayerUserID, word, *tx.CategoryID, nil, storage.SourceManual); err != nil {
 			log.Warn("не запомнил ручную правку", "err", err, "word", word)
 		}
 	}

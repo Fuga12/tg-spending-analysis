@@ -37,7 +37,7 @@ type countingLLM struct {
 	items []RawItem
 }
 
-func (c *countingLLM) Parse(context.Context, string, []storage.Category) ([]RawItem, error) {
+func (c *countingLLM) Parse(context.Context, UsageRecorder, string, []storage.Category) ([]RawItem, error) {
 	c.calls++
 	return c.items, nil
 }
@@ -49,21 +49,30 @@ type openGate struct{}
 func (openGate) Allow() bool  { return true }
 func (openGate) Record(error) {}
 
+// noUsage — расход токенов, который никуда не пишется: здесь проверяется
+// быстрый путь, а он в сеть не ходит вовсе.
+type noUsage struct{}
+
+func (noUsage) RecordUsage(context.Context, string, int, int, bool, string) error { return nil }
+
 type alwaysAllowBudget struct{}
 
 func (alwaysAllowBudget) Allow(context.Context) bool { return true }
 
-func newService(words map[string]storage.WordHit, llm *countingLLM) *Service {
-	return NewService(&fakeDict{words: words}, llm, openGate{}, alwaysAllowBudget{}, quietLog())
+// newService собирает разбор вместе с областью, в которой он идёт: словарь
+// принадлежит группе, а Service один на процесс.
+func newService(words map[string]storage.WordHit, llm *countingLLM) (*Service, Scope) {
+	svc := NewService(llm, openGate{}, alwaysAllowBudget{}, quietLog())
+	return svc, Scope{UserID: 1, Dict: &fakeDict{words: words}, Usage: noUsage{}}
 }
 
 func TestCacheHitSkipsAPI(t *testing.T) {
 	llm := &countingLLM{}
-	svc := newService(map[string]storage.WordHit{
+	svc, sc := newService(map[string]storage.WordHit{
 		"пятёрочка": {CategoryID: 1, Source: storage.SourceLLM, Hits: 5},
 	}, llm)
 
-	res, err := svc.Classify(context.Background(), 1, "пятёрочка 1200")
+	res, err := svc.Classify(context.Background(), sc, "пятёрочка 1200")
 	if err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
@@ -76,42 +85,41 @@ func TestCacheHitSkipsAPI(t *testing.T) {
 	if len(res.Items) != 1 || !res.Items[0].Amount.Equal(dec("1200")) {
 		t.Fatalf("ожидалась одна трата на 1200, получено %+v", res.Items)
 	}
-	// beneficiary у слова не задан — берётся default_beneficiary категории.
-	if res.Items[0].Beneficiary != BenBoth {
-		t.Errorf("beneficiary = %q, ожидался both из категории", res.Items[0].Beneficiary)
+	if res.Items[0].CategoryID == nil || *res.Items[0].CategoryID != 1 {
+		t.Errorf("категория = %v, ожидались Продукты (1)", res.Items[0].CategoryID)
 	}
 }
 
 func TestSeedOnlyWordSkipsAPI(t *testing.T) {
 	llm := &countingLLM{}
-	svc := newService(map[string]storage.WordHit{
+	svc, sc := newService(map[string]storage.WordHit{
 		"такси": {CategoryID: 2, Source: storage.SourceSeed},
 	}, llm)
 
-	res, err := svc.Classify(context.Background(), 1, "такси 450")
+	res, err := svc.Classify(context.Background(), sc, "такси 450")
 	if err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
 	if llm.calls != 0 {
 		t.Errorf("модель вызвана %d раз, ожидалось 0", llm.calls)
 	}
-	if res.Items[0].Beneficiary != BenPayer {
-		t.Errorf("beneficiary = %q, ожидался payer из категории Такси", res.Items[0].Beneficiary)
+	if res.Items[0].CategoryID == nil || *res.Items[0].CategoryID != 2 {
+		t.Errorf("категория = %v, ожидалось Такси (2)", res.Items[0].CategoryID)
 	}
 }
 
 func TestComplexityTriggerForcesAPI(t *testing.T) {
 	llm := &countingLLM{items: []RawItem{
-		raw("1200", "пятёрочка", "Продукты", BenBoth, KindExpense, 0),
-		raw("400", "такси", "Такси", BenPayer, KindExpense, 0),
+		raw("1200", "пятёрочка", "Продукты", KindExpense, 0),
+		raw("400", "такси", "Такси", KindExpense, 0),
 	}}
-	svc := newService(map[string]storage.WordHit{
+	svc, sc := newService(map[string]storage.WordHit{
 		"пятёрочка": {CategoryID: 1, Source: storage.SourceLLM, Hits: 5},
 		"такси":     {CategoryID: 2, Source: storage.SourceSeed},
 	}, llm)
 
 	// Слова в кэше есть, но «и» означает перечисление — словарь не справится.
-	res, err := svc.Classify(context.Background(), 1, "пятёрочка 1200 и такси 400")
+	res, err := svc.Classify(context.Background(), sc, "пятёрочка 1200 и такси 400")
 	if err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
@@ -124,10 +132,10 @@ func TestComplexityTriggerForcesAPI(t *testing.T) {
 }
 
 func TestUnknownWordGoesToAPI(t *testing.T) {
-	llm := &countingLLM{items: []RawItem{raw("600", "лимонад", "Продукты", BenBoth, KindExpense, 0)}}
-	svc := newService(map[string]storage.WordHit{}, llm)
+	llm := &countingLLM{items: []RawItem{raw("600", "лимонад", "Продукты", KindExpense, 0)}}
+	svc, sc := newService(map[string]storage.WordHit{}, llm)
 
-	if _, err := svc.Classify(context.Background(), 1, "600 лимонад"); err != nil {
+	if _, err := svc.Classify(context.Background(), sc, "600 лимонад"); err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
 	if llm.calls != 1 {
@@ -136,14 +144,14 @@ func TestUnknownWordGoesToAPI(t *testing.T) {
 }
 
 func TestTwoAmountsGoToAPI(t *testing.T) {
-	llm := &countingLLM{items: []RawItem{raw("4000", "такси", "Такси", BenPayer, KindExpense, 0)}}
-	svc := newService(map[string]storage.WordHit{
+	llm := &countingLLM{items: []RawItem{raw("4000", "такси", "Такси", KindExpense, 0)}}
+	svc, sc := newService(map[string]storage.WordHit{
 		"такси": {CategoryID: 2, Source: storage.SourceSeed},
 		"обед":  {CategoryID: 1, Source: storage.SourceSeed},
 	}, llm)
 
 	// Оба слова в словаре, но сумм две — словарь не берётся (§5, условие 1).
-	if _, err := svc.Classify(context.Background(), 1, "такси 4000 обед 350"); err != nil {
+	if _, err := svc.Classify(context.Background(), sc, "такси 4000 обед 350"); err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
 	if llm.calls != 1 {
@@ -153,14 +161,14 @@ func TestTwoAmountsGoToAPI(t *testing.T) {
 
 func TestManualBeatsLLMAndSeed(t *testing.T) {
 	llm := &countingLLM{}
-	svc := newService(map[string]storage.WordHit{
+	svc, sc := newService(map[string]storage.WordHit{
 		// Пользователь руками сказал, что «самокат» — это Такси,
 		// хотя затравка считает его Продуктами, а модель — тоже Продуктами.
-		"самокат":  {CategoryID: 2, Source: storage.SourceManual, Beneficiary: BenPayer, Hits: 1},
+		"самокат":  {CategoryID: 2, Source: storage.SourceManual, Hits: 1},
 		"вечерний": {CategoryID: 1, Source: storage.SourceLLM, Hits: 99},
 	}, llm)
 
-	res, err := svc.Classify(context.Background(), 1, "вечерний самокат 250")
+	res, err := svc.Classify(context.Background(), sc, "вечерний самокат 250")
 	if err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
@@ -170,19 +178,16 @@ func TestManualBeatsLLMAndSeed(t *testing.T) {
 	if res.Items[0].CategoryID == nil || *res.Items[0].CategoryID != 2 {
 		t.Errorf("категория = %v, ожидалась ручная (2)", res.Items[0].CategoryID)
 	}
-	if res.Items[0].Beneficiary != BenPayer {
-		t.Errorf("beneficiary = %q, ожидался payer из ручной правки", res.Items[0].Beneficiary)
-	}
 }
 
 func TestHitsBreakTieInsideWordMap(t *testing.T) {
 	llm := &countingLLM{}
-	svc := newService(map[string]storage.WordHit{
+	svc, sc := newService(map[string]storage.WordHit{
 		"кофе":   {CategoryID: 1, Source: storage.SourceLLM, Hits: 2},
 		"утренн": {CategoryID: 2, Source: storage.SourceLLM, Hits: 40},
 	}, llm)
 
-	res, err := svc.Classify(context.Background(), 1, "утренн кофе 250")
+	res, err := svc.Classify(context.Background(), sc, "утренн кофе 250")
 	if err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
@@ -193,9 +198,9 @@ func TestHitsBreakTieInsideWordMap(t *testing.T) {
 
 func TestNoAmountIsAnError(t *testing.T) {
 	llm := &countingLLM{}
-	svc := newService(map[string]storage.WordHit{}, llm)
+	svc, sc := newService(map[string]storage.WordHit{}, llm)
 
-	_, err := svc.Classify(context.Background(), 1, "кофе")
+	_, err := svc.Classify(context.Background(), sc, "кофе")
 	if err != ErrNoAmount {
 		t.Fatalf("ошибка = %v, ожидалась ErrNoAmount", err)
 	}
@@ -221,11 +226,11 @@ func TestSignificantWords(t *testing.T) {
 func TestCacheHitWithCurrencyTail(t *testing.T) {
 	// «кофе 500р»: валютный хвост не должен ломать быстрый путь.
 	llm := &countingLLM{}
-	svc := newService(map[string]storage.WordHit{
+	svc, sc := newService(map[string]storage.WordHit{
 		"кофе": {CategoryID: 1, Source: storage.SourceSeed},
 	}, llm)
 
-	res, err := svc.Classify(context.Background(), 1, "кофе 500р")
+	res, err := svc.Classify(context.Background(), sc, "кофе 500р")
 	if err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
@@ -241,12 +246,12 @@ func TestCacheDoesNotRelabelForeignWords(t *testing.T) {
 	// Победила ручная привязка «самокат» → Такси. Слово «вечерний» указывало
 	// на другую категорию, и переучивать его на Такси нельзя.
 	llm := &countingLLM{}
-	svc := newService(map[string]storage.WordHit{
+	svc, sc := newService(map[string]storage.WordHit{
 		"самокат":  {CategoryID: 2, Source: storage.SourceManual, Hits: 1},
 		"вечерний": {CategoryID: 1, Source: storage.SourceLLM, Hits: 99},
 	}, llm)
 
-	res, err := svc.Classify(context.Background(), 1, "вечерний самокат 250")
+	res, err := svc.Classify(context.Background(), sc, "вечерний самокат 250")
 	if err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}

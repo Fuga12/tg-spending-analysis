@@ -46,10 +46,55 @@ func testStore(t *testing.T) *storage.Store {
 		t.Fatalf("подключение: %v", err)
 	}
 	t.Cleanup(s.Close)
-	if _, err := s.Pool().Exec(ctx, `truncate transactions restart identity`); err != nil {
+	if _, err := s.Pool().Exec(ctx, `
+		truncate transactions, tx_recipients, word_map, llm_usage,
+		         categories, invites, members, groups, users
+		restart identity cascade`); err != nil {
 		t.Fatalf("очистка: %v", err)
 	}
 	return s
+}
+
+// testGroup заводит группу и возвращает её хранилище вместе с участниками
+// в порядке telegram id.
+func testGroup(t *testing.T, s *storage.Store, ids ...int64) (*storage.GroupStore, []storage.Member) {
+	t.Helper()
+	ctx := context.Background()
+
+	for _, id := range ids {
+		if err := s.EnsureUser(ctx, id, "Тест"); err != nil {
+			t.Fatalf("пользователь %d: %v", id, err)
+		}
+	}
+	gr, admin, err := s.CreateGroup(ctx, "Тест", ids[0])
+	if err != nil {
+		t.Fatalf("группа: %v", err)
+	}
+	g := s.ForGroup(gr.ID)
+
+	members := []storage.Member{admin}
+	for _, id := range ids[1:] {
+		m, err := g.AddMember(ctx, id, storage.RoleMember)
+		if err != nil {
+			t.Fatalf("участник %d: %v", id, err)
+		}
+		members = append(members, m)
+	}
+	return g, members
+}
+
+// record кладёт трату от имени участника — всё, что нужно напоминанию.
+func record(t *testing.T, g *storage.GroupStore, m storage.Member, spentAt time.Time) int64 {
+	t.Helper()
+	id, err := g.InsertTransaction(context.Background(), storage.Transaction{
+		PayerMemberID: m.ID, Recipients: []int64{m.ID}, Kind: classify.KindExpense,
+		Amount: decimal.RequireFromString("600"), Description: "лимонад",
+		RawText: "600 лимонад", SpentAt: spentAt,
+	})
+	if err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
+	return id
 }
 
 func TestNotifyOnlySilentUsers(t *testing.T) {
@@ -57,20 +102,10 @@ func TestNotifyOnlySilentUsers(t *testing.T) {
 	ctx := context.Background()
 
 	const talker, silent = int64(901), int64(902)
-	for _, id := range []int64{talker, silent} {
-		if err := store.EnsureUser(ctx, id, "Тест"); err != nil {
-			t.Fatalf("пользователь: %v", err)
-		}
-	}
+	g, members := testGroup(t, store, talker, silent)
 
 	now := time.Now()
-	if _, err := store.InsertTransaction(ctx, storage.Transaction{
-		PayerID: talker, Beneficiary: classify.BenPayer, Kind: classify.KindExpense,
-		Amount: decimal.RequireFromString("600"), Description: "лимонад",
-		RawText: "600 лимонад", SpentAt: now,
-	}); err != nil {
-		t.Fatalf("вставка: %v", err)
-	}
+	record(t, g, members[0], now)
 
 	sender := &spySender{}
 	r := New(&config.Config{
@@ -96,17 +131,10 @@ func TestNotifyCountsTodaysActivityNotSpentDate(t *testing.T) {
 	ctx := context.Background()
 
 	const userID = int64(903)
-	if err := store.EnsureUser(ctx, userID, "Тест"); err != nil {
-		t.Fatalf("пользователь: %v", err)
-	}
+	g, members := testGroup(t, store, userID)
+
 	now := time.Now()
-	if _, err := store.InsertTransaction(ctx, storage.Transaction{
-		PayerID: userID, Beneficiary: classify.BenPayer, Kind: classify.KindExpense,
-		Amount: decimal.RequireFromString("600"), Description: "лимонад",
-		RawText: "600 лимонад", SpentAt: now.AddDate(0, 0, -1),
-	}); err != nil {
-		t.Fatalf("вставка: %v", err)
-	}
+	record(t, g, members[0], now.AddDate(0, 0, -1))
 
 	sender := &spySender{}
 	r := New(&config.Config{
@@ -126,18 +154,10 @@ func TestNotifyIgnoresYesterdaysActivity(t *testing.T) {
 	ctx := context.Background()
 
 	const userID = int64(904)
-	if err := store.EnsureUser(ctx, userID, "Тест"); err != nil {
-		t.Fatalf("пользователь: %v", err)
-	}
+	g, members := testGroup(t, store, userID)
+
 	now := time.Now()
-	id, err := store.InsertTransaction(ctx, storage.Transaction{
-		PayerID: userID, Beneficiary: classify.BenPayer, Kind: classify.KindExpense,
-		Amount: decimal.RequireFromString("600"), Description: "лимонад",
-		RawText: "600 лимонад", SpentAt: now.AddDate(0, 0, -1),
-	})
-	if err != nil {
-		t.Fatalf("вставка: %v", err)
-	}
+	id := record(t, g, members[0], now.AddDate(0, 0, -1))
 	if _, err := store.Pool().Exec(ctx,
 		`update transactions set created_at = now() - interval '1 day' where id = $1`, id); err != nil {
 		t.Fatalf("сдвиг даты записи: %v", err)

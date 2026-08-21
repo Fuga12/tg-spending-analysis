@@ -30,11 +30,45 @@ func testStore(t *testing.T) *Store {
 	}
 	t.Cleanup(s.Close)
 
-	// Затравка и категории остаются: они часть схемы.
-	if _, err := s.pool.Exec(ctx, `truncate transactions, word_map, llm_usage, users restart identity cascade`); err != nil {
+	// Шаблон категорий и затравка словаря остаются: они часть схемы, а не
+	// данные группы.
+	if _, err := s.pool.Exec(ctx, `
+		truncate transactions, tx_recipients, word_map, llm_usage,
+		         categories, invites, members, groups, users
+		restart identity cascade`); err != nil {
 		t.Fatalf("очистка: %v", err)
 	}
 	return s
+}
+
+// testGroup заводит группу из n человек с telegram id 1..n. Первый —
+// администратор. Возвращает скоупнутое хранилище и участников по порядку.
+func testGroup(t *testing.T, s *Store, n int) (*GroupStore, []Member) {
+	t.Helper()
+	ctx := context.Background()
+
+	names := []string{"Илья", "Аня", "Уля", "Дима", "Мила", "Кир", "Ася", "Лев", "Рома", "Ника"}
+	for i := 1; i <= n; i++ {
+		if err := s.EnsureUser(ctx, int64(i), names[(i-1)%len(names)]); err != nil {
+			t.Fatalf("пользователь %d: %v", i, err)
+		}
+	}
+
+	g, admin, err := s.CreateGroup(ctx, "Тест", 1)
+	if err != nil {
+		t.Fatalf("создание группы: %v", err)
+	}
+	gs := s.ForGroup(g.ID)
+
+	members := []Member{admin}
+	for i := 2; i <= n; i++ {
+		m, err := gs.AddMember(ctx, int64(i), RoleMember)
+		if err != nil {
+			t.Fatalf("участник %d: %v", i, err)
+		}
+		members = append(members, m)
+	}
+	return gs, members
 }
 
 func TestEnsureUserDoesNotOverwriteChosenName(t *testing.T) {
@@ -54,109 +88,198 @@ func TestEnsureUserDoesNotOverwriteChosenName(t *testing.T) {
 		t.Fatalf("повторное сообщение: %v", err)
 	}
 
-	users, err := s.Users(ctx)
-	if err != nil {
-		t.Fatalf("чтение участников: %v", err)
+	if _, _, err := s.CreateGroup(ctx, "Тест", 1); err != nil {
+		t.Fatalf("группа: %v", err)
 	}
-	if len(users) != 1 {
-		t.Fatalf("участников = %d, ожидался один", len(users))
+	m, ok, err := s.MemberOf(ctx, 1)
+	if err != nil || !ok {
+		t.Fatalf("поиск участника: ok=%v err=%v", ok, err)
 	}
-	if users[0].Name != "Уля" {
-		t.Errorf("имя = %q, ожидалось выбранное человеком «Уля»", users[0].Name)
+	if m.Name != "Уля" {
+		t.Errorf("имя = %q, ожидалось выбранное человеком «Уля»", m.Name)
 	}
 }
 
-func TestMigrationsSeedSchema(t *testing.T) {
+func TestCreateGroupRollsOutCategoryTemplate(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
+	g, _ := testGroup(t, s, 1)
 
-	cats, err := s.Categories(ctx)
+	cats, err := g.Categories(ctx)
 	if err != nil {
 		t.Fatalf("категории: %v", err)
 	}
 	if len(cats) != 14 {
-		t.Errorf("категорий %d, в плане ровно 14", len(cats))
+		t.Fatalf("категорий %d, в шаблоне 14", len(cats))
 	}
 	if cats[0].Name != "Продукты" || cats[len(cats)-1].Name != "Прочее" {
 		t.Errorf("порядок категорий = %s ... %s", cats[0].Name, cats[len(cats)-1].Name)
 	}
-
-	var seeded int
-	if err := s.pool.QueryRow(ctx, `select count(*) from word_seed`).Scan(&seeded); err != nil {
-		t.Fatalf("затравка: %v", err)
-	}
-	if seeded != 82 {
-		t.Errorf("слов в затравке %d, ожидалось 82", seeded)
+	// Категория-свалка ищется по ключу шаблона, а не по имени: её могут
+	// переименовать.
+	if cats[len(cats)-1].TemplateKey != TemplateOther {
+		t.Errorf("ключ последней категории = %q, ожидался %q",
+			cats[len(cats)-1].TemplateKey, TemplateOther)
 	}
 
-	// Неоднозначные слова сеять нельзя (§4).
-	var ambiguous int
-	err = s.pool.QueryRow(ctx,
-		`select count(*) from word_seed where word = any($1)`,
-		[]string{"метро", "озон", "вб", "вайлдберриз"}).Scan(&ambiguous)
+	// Категории второй группы — свои, а не общие с первой.
+	if err := s.EnsureUser(ctx, 99, "Чужой"); err != nil {
+		t.Fatalf("пользователь: %v", err)
+	}
+	other, _, err := s.CreateGroup(ctx, "Другая", 99)
 	if err != nil {
-		t.Fatalf("проверка неоднозначных: %v", err)
+		t.Fatalf("вторая группа: %v", err)
 	}
-	if ambiguous != 0 {
-		t.Errorf("в затравке %d неоднозначных слов, их там быть не должно", ambiguous)
+	otherCats, _ := s.ForGroup(other.ID).Categories(ctx)
+	if len(otherCats) != 14 {
+		t.Fatalf("категорий второй группы %d, ожидалось 14", len(otherCats))
+	}
+	if otherCats[0].ID == cats[0].ID {
+		t.Error("категории двух групп не должны быть одной и той же строкой")
 	}
 }
 
-func TestLookupWordsPrefersPersonalCache(t *testing.T) {
+func TestMemberOfIsEmptyUntilGroupExists(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 
-	if err := s.EnsureUser(ctx, 1, "Тест"); err != nil {
+	if err := s.EnsureUser(ctx, 1, "Илья"); err != nil {
 		t.Fatalf("пользователь: %v", err)
 	}
-	cats, _ := s.Categories(ctx)
+	// Человек боту известен, но в группе не состоит — записывать некуда,
+	// и это нормальное состояние только что пришедшего.
+	if _, ok, err := s.MemberOf(ctx, 1); err != nil || ok {
+		t.Errorf("без группы MemberOf = ok:%v err:%v, ожидалось ok:false", ok, err)
+	}
+}
+
+func TestOnePersonOneGroup(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	_, _ = testGroup(t, s, 2)
+
+	if err := s.EnsureUser(ctx, 50, "Гость"); err != nil {
+		t.Fatalf("пользователь: %v", err)
+	}
+	first, _, err := s.CreateGroup(ctx, "Первая", 50)
+	if err != nil {
+		t.Fatalf("первая группа: %v", err)
+	}
+	second, _, err := s.CreateGroup(ctx, "Вторая", 1)
+	if err == nil {
+		t.Fatalf("человек из группы %d завёл ещё одну (%d) — это запрещено",
+			first.ID, second.ID)
+	}
+}
+
+func TestSeedWordsLandOnGroupCategories(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	g, _ := testGroup(t, s, 2)
+
+	cats, _ := g.Categories(ctx)
+	food := categoryID(t, cats, "Продукты")
 	taxi := categoryID(t, cats, "Такси")
 
-	// «самокат» в затравке — Продукты. Пользователь сказал: это Такси.
-	if err := s.UpsertWord(ctx, 1, "самокат", taxi, "payer", SourceManual); err != nil {
-		t.Fatalf("upsert: %v", err)
-	}
-
-	hits, err := s.LookupWords(ctx, 1, []string{"самокат", "такси", "неизвестноеслово"})
+	hits, err := g.LookupWords(ctx, 1, []string{"пятёрочка", "такси", "неизвестноеслово"})
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
 	if len(hits) != 2 {
-		t.Fatalf("найдено %d слов, ожидалось два", len(hits))
+		t.Fatalf("найдено %d слов (%+v), ожидалось два", len(hits), hits)
 	}
-	if h := hits["самокат"]; h.Source != SourceManual || h.CategoryID != taxi {
-		t.Errorf("«самокат» = %+v, ожидалась ручная привязка к Такси", h)
+	// Затравка общая на всех и хранит ключ шаблона — приземлиться она обязана
+	// на категории именно этой группы.
+	if h := hits["пятёрочка"]; h.CategoryID != food || h.Source != SourceSeed {
+		t.Errorf("«пятёрочка» = %+v, ожидалась затравка в Продукты (%d)", h, food)
 	}
-	if h := hits["такси"]; h.Source != SourceSeed {
-		t.Errorf("«такси» = %+v, ожидалась затравка", h)
+	if h := hits["такси"]; h.CategoryID != taxi {
+		t.Errorf("«такси» = %+v, ожидалась категория Такси (%d)", h, taxi)
 	}
 	if _, ok := hits["неизвестноеслово"]; ok {
 		t.Error("незнакомое слово не должно находиться")
 	}
 }
 
+func TestLookupWordsPrefersPersonalCache(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	g, _ := testGroup(t, s, 2)
+
+	cats, _ := g.Categories(ctx)
+	taxi := categoryID(t, cats, "Такси")
+
+	// «самокат» в затравке — Продукты. Пользователь сказал: это Такси.
+	if err := g.UpsertWord(ctx, 1, "самокат", taxi, nil, SourceManual); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	hits, err := g.LookupWords(ctx, 1, []string{"самокат"})
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if h := hits["самокат"]; h.Source != SourceManual || h.CategoryID != taxi {
+		t.Errorf("«самокат» = %+v, ожидалась ручная привязка к Такси", h)
+	}
+
+	// Словарь личный: второму участнику той же группы он не виден.
+	hits, _ = g.LookupWords(ctx, 2, []string{"самокат"})
+	if h := hits["самокат"]; h.Source != SourceSeed {
+		t.Errorf("у второго участника «самокат» = %+v, ожидалась затравка", h)
+	}
+}
+
+func TestDictionaryIsScopedToGroup(t *testing.T) {
+	// Худший баг мультитенантности — увидеть чужое. Словарь одного человека
+	// в двух группах разный: категории у групп свои, и привязка к чужой
+	// категории бессмысленна.
+	s := testStore(t)
+	ctx := context.Background()
+	g, _ := testGroup(t, s, 1)
+
+	cats, _ := g.Categories(ctx)
+	taxi := categoryID(t, cats, "Такси")
+	if err := g.UpsertWord(ctx, 1, "самокат", taxi, nil, SourceManual); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	if err := s.EnsureUser(ctx, 99, "Чужой"); err != nil {
+		t.Fatalf("пользователь: %v", err)
+	}
+	other, _, err := s.CreateGroup(ctx, "Другая", 99)
+	if err != nil {
+		t.Fatalf("вторая группа: %v", err)
+	}
+
+	hits, err := s.ForGroup(other.ID).LookupWords(ctx, 1, []string{"самокат"})
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if h := hits["самокат"]; h.Source == SourceManual {
+		t.Errorf("в чужой группе «самокат» = %+v — личная привязка не должна протекать", h)
+	}
+}
+
 func TestUpsertWordDoesNotOverwriteManual(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
+	g, _ := testGroup(t, s, 1)
 
-	if err := s.EnsureUser(ctx, 1, "Тест"); err != nil {
-		t.Fatalf("пользователь: %v", err)
-	}
-	cats, _ := s.Categories(ctx)
+	cats, _ := g.Categories(ctx)
 	taxi := categoryID(t, cats, "Такси")
 	food := categoryID(t, cats, "Продукты")
 
-	if err := s.UpsertWord(ctx, 1, "самокат", taxi, "payer", SourceManual); err != nil {
+	if err := g.UpsertWord(ctx, 1, "самокат", taxi, nil, SourceManual); err != nil {
 		t.Fatalf("ручная привязка: %v", err)
 	}
 	// Модель считает иначе — и не должна перебить пользователя (§8).
-	if err := s.UpsertWord(ctx, 1, "самокат", food, "both", SourceLLM); err != nil {
+	if err := g.UpsertWord(ctx, 1, "самокат", food, nil, SourceLLM); err != nil {
 		t.Fatalf("привязка моделью: %v", err)
 	}
 
-	hits, _ := s.LookupWords(ctx, 1, []string{"самокат"})
+	hits, _ := g.LookupWords(ctx, 1, []string{"самокат"})
 	h := hits["самокат"]
-	if h.CategoryID != taxi || h.Source != SourceManual || h.Beneficiary != "payer" {
+	if h.CategoryID != taxi || h.Source != SourceManual {
 		t.Errorf("после ответа модели = %+v, ожидалась сохранённая ручная привязка", h)
 	}
 	if h.Hits != 2 {
@@ -164,37 +287,49 @@ func TestUpsertWordDoesNotOverwriteManual(t *testing.T) {
 	}
 
 	// А вот новая ручная правка перебивает старую.
-	if err := s.UpsertWord(ctx, 1, "самокат", food, "both", SourceManual); err != nil {
+	if err := g.UpsertWord(ctx, 1, "самокат", food, nil, SourceManual); err != nil {
 		t.Fatalf("вторая ручная правка: %v", err)
 	}
-	hits, _ = s.LookupWords(ctx, 1, []string{"самокат"})
+	hits, _ = g.LookupWords(ctx, 1, []string{"самокат"})
 	if hits["самокат"].CategoryID != food {
 		t.Errorf("категория = %d, ожидалась новая ручная (%d)", hits["самокат"].CategoryID, food)
 	}
 }
 
-func TestForgetLLMWordsKeepsManual(t *testing.T) {
+func TestForgetLLMWordsKeepsManualAndOtherGroups(t *testing.T) {
 	// Список категорий изменился — догадки модели устарели: «пиво», однажды
 	// разобранное в Продукты, иначе резолвилось бы туда и после появления
-	// категории «Алкоголь». Ручные привязки при этом трогать нельзя.
+	// категории «Алкоголь». Ручные привязки при этом трогать нельзя, а чужие
+	// группы не касается вовсе.
 	s := testStore(t)
 	ctx := context.Background()
+	g, _ := testGroup(t, s, 1)
 
-	if err := s.EnsureUser(ctx, 1, "Тест"); err != nil {
-		t.Fatalf("пользователь: %v", err)
-	}
-	cats, _ := s.Categories(ctx)
+	cats, _ := g.Categories(ctx)
 	food := categoryID(t, cats, "Продукты")
 	taxi := categoryID(t, cats, "Такси")
 
-	if err := s.UpsertWord(ctx, 1, "пиво", food, "both", SourceLLM); err != nil {
+	if err := g.UpsertWord(ctx, 1, "пиво", food, nil, SourceLLM); err != nil {
 		t.Fatalf("привязка моделью: %v", err)
 	}
-	if err := s.UpsertWord(ctx, 1, "самокат", taxi, "payer", SourceManual); err != nil {
+	if err := g.UpsertWord(ctx, 1, "самокат", taxi, nil, SourceManual); err != nil {
 		t.Fatalf("ручная привязка: %v", err)
 	}
 
-	n, err := s.ForgetLLMWords(ctx)
+	if err := s.EnsureUser(ctx, 99, "Чужой"); err != nil {
+		t.Fatalf("пользователь: %v", err)
+	}
+	otherGroup, _, err := s.CreateGroup(ctx, "Другая", 99)
+	if err != nil {
+		t.Fatalf("вторая группа: %v", err)
+	}
+	og := s.ForGroup(otherGroup.ID)
+	otherCats, _ := og.Categories(ctx)
+	if err := og.UpsertWord(ctx, 99, "пиво", categoryID(t, otherCats, "Продукты"), nil, SourceLLM); err != nil {
+		t.Fatalf("привязка в чужой группе: %v", err)
+	}
+
+	n, err := g.ForgetLLMWords(ctx)
 	if err != nil {
 		t.Fatalf("сброс словаря: %v", err)
 	}
@@ -202,23 +337,29 @@ func TestForgetLLMWordsKeepsManual(t *testing.T) {
 		t.Errorf("удалено слов: %d, ожидалось 1", n)
 	}
 
-	hits, _ := s.LookupWords(ctx, 1, []string{"пиво", "самокат"})
-	if _, ok := hits["пиво"]; ok {
+	hits, _ := g.LookupWords(ctx, 1, []string{"пиво", "самокат"})
+	if h, ok := hits["пиво"]; ok && h.Source == SourceLLM {
 		t.Error("догадка модели должна была уйти из личного словаря")
 	}
 	if hits["самокат"].Source != SourceManual {
 		t.Errorf("ручная привязка = %+v, её сброс не касается", hits["самокат"])
+	}
+
+	otherHits, _ := og.LookupWords(ctx, 99, []string{"пиво"})
+	if otherHits["пиво"].Source != SourceLLM {
+		t.Errorf("в чужой группе «пиво» = %+v — сброс не должен её касаться", otherHits["пиво"])
 	}
 }
 
 func TestMonthlyUsageIgnoresPreviousMonth(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
+	g, _ := testGroup(t, s, 1)
 
-	if err := s.RecordUsage(ctx, "gpt://f/m", 650, 50, true, ""); err != nil {
+	if err := g.RecordUsage(ctx, "gpt://f/m", 650, 50, true, ""); err != nil {
 		t.Fatalf("запись расхода: %v", err)
 	}
-	if err := s.RecordUsage(ctx, "gpt://f/m", 0, 0, false, ErrKindQuota); err != nil {
+	if err := g.RecordUsage(ctx, "gpt://f/m", 0, 0, false, ErrKindQuota); err != nil {
 		t.Fatalf("запись расхода: %v", err)
 	}
 	// Строка из прошлого месяца в текущий счётчик попадать не должна (§11).
@@ -239,14 +380,25 @@ func TestMonthlyUsageIgnoresPreviousMonth(t *testing.T) {
 	if used.Calls != 2 || used.Failed != 1 {
 		t.Errorf("вызовов %d, неуспешных %d, ожидалось 2 и 1", used.Calls, used.Failed)
 	}
+
+	// Группа проставляется сразу, хотя тарификация групп будет позже.
+	var withGroup int
+	if err := s.pool.QueryRow(ctx,
+		`select count(*) from llm_usage where group_id = $1`, g.GroupID()).Scan(&withGroup); err != nil {
+		t.Fatalf("проверка группы: %v", err)
+	}
+	if withGroup != 2 {
+		t.Errorf("строк с группой %d, ожидалось 2", withGroup)
+	}
 }
 
 func TestRecordUsageKeepsErrorKind(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
+	g, _ := testGroup(t, s, 1)
 
 	for _, kind := range []string{ErrKindTimeout, ErrKindQuota, ErrKindHTTP, ErrKindSchema, ErrKindOther} {
-		if err := s.RecordUsage(ctx, "gpt://f/m", 0, 0, false, kind); err != nil {
+		if err := g.RecordUsage(ctx, "gpt://f/m", 0, 0, false, kind); err != nil {
 			t.Fatalf("вид ошибки %q не записался: %v", kind, err)
 		}
 	}
@@ -270,4 +422,13 @@ func categoryID(t *testing.T, cats []Category, name string) int32 {
 	}
 	t.Fatalf("категория %q не найдена", name)
 	return 0
+}
+
+// memberIDs — короткая запись списка получателей в тестах.
+func memberIDs(members []Member, idx ...int) []int64 {
+	out := make([]int64, 0, len(idx))
+	for _, i := range idx {
+		out = append(out, members[i].ID)
+	}
+	return out
 }

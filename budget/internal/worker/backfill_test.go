@@ -35,8 +35,12 @@ func testStore(t *testing.T) *storage.Store {
 	}
 	t.Cleanup(s.Close)
 
-	// Очередь добора общая, и записи прошлых тестов ломали бы счётчик вызовов.
-	if _, err := s.Pool().Exec(ctx, `truncate transactions restart identity`); err != nil {
+	// Очередь добора общая на все группы, и записи прошлых тестов ломали бы
+	// счётчик вызовов.
+	if _, err := s.Pool().Exec(ctx, `
+		truncate transactions, tx_recipients, word_map, llm_usage,
+		         categories, invites, members, groups, users
+		restart identity cascade`); err != nil {
 		t.Fatalf("очистка: %v", err)
 	}
 	return s
@@ -49,27 +53,42 @@ type stubLLM struct {
 	err   error
 }
 
-func (s *stubLLM) Parse(context.Context, string, []storage.Category) ([]classify.RawItem, error) {
+func (s *stubLLM) Parse(context.Context, classify.UsageRecorder, string, []storage.Category) ([]classify.RawItem, error) {
 	s.calls++
 	return s.items, s.err
 }
 
-func newBackfill(t *testing.T, llm classify.LLM, breaker *classify.Breaker, budget *classify.Budget) (*Backfill, *storage.Store) {
-	t.Helper()
-	store := testStore(t)
-	svc := classify.NewService(store, llm, breaker, budget, quietLog())
-	return New(store, svc, breaker, budget, quietLog()), store
+// group — группа из одного человека и её хранилище. Воркер ходит по очереди
+// всех групп, но проверять его удобнее на одной.
+type group struct {
+	store  *storage.Store
+	g      *storage.GroupStore
+	member storage.Member
 }
 
-func degradedTx(t *testing.T, store *storage.Store, userID int64, amount, raw string) int64 {
+func newBackfill(t *testing.T, llm classify.LLM, breaker *classify.Breaker, budget *classify.Budget) (*Backfill, group) {
 	t.Helper()
+	store := testStore(t)
+	svc := classify.NewService(llm, breaker, budget, quietLog())
+
 	ctx := context.Background()
+	const userID = int64(501)
 	if err := store.EnsureUser(ctx, userID, "Тест"); err != nil {
 		t.Fatalf("пользователь: %v", err)
 	}
-	id, err := store.InsertTransaction(ctx, storage.Transaction{
-		PayerID:             userID,
-		Beneficiary:         classify.BenPayer,
+	gr, member, err := store.CreateGroup(ctx, "Тест", userID)
+	if err != nil {
+		t.Fatalf("группа: %v", err)
+	}
+	return New(store, svc, breaker, budget, quietLog()),
+		group{store: store, g: store.ForGroup(gr.ID), member: member}
+}
+
+func degradedTx(t *testing.T, gr group, amount, raw string) int64 {
+	t.Helper()
+	id, err := gr.g.InsertTransaction(context.Background(), storage.Transaction{
+		PayerMemberID:       gr.member.ID,
+		Recipients:          []int64{gr.member.ID},
 		Kind:                classify.KindExpense,
 		Amount:              decimal.RequireFromString(amount),
 		Description:         raw,
@@ -86,15 +105,15 @@ func degradedTx(t *testing.T, store *storage.Store, userID int64, amount, raw st
 func TestBackfillFillsCategory(t *testing.T) {
 	llm := &stubLLM{items: []classify.RawItem{{
 		Amount: "600", Description: "лимонад", Category: "Продукты",
-		Beneficiary: classify.BenBoth, Kind: classify.KindExpense,
+		Kind: classify.KindExpense,
 	}}}
 	budget := classify.NewBudget(2_000_000, &zeroUsage{}, nil, quietLog())
-	w, store := newBackfill(t, llm, classify.NewBreaker(time.Minute, quietLog()), budget)
+	w, gr := newBackfill(t, llm, classify.NewBreaker(time.Minute, quietLog()), budget)
 
-	id := degradedTx(t, store, 501, "600", "600 лимонад")
+	id := degradedTx(t, gr, "600", "600 лимонад")
 	w.Tick(context.Background())
 
-	tx, err := store.Transaction(context.Background(), id)
+	tx, err := gr.g.Transaction(context.Background(), id)
 	if err != nil {
 		t.Fatalf("чтение: %v", err)
 	}
@@ -104,8 +123,10 @@ func TestBackfillFillsCategory(t *testing.T) {
 	if tx.CategoryName != "Продукты" {
 		t.Errorf("категория = %q, ожидались Продукты", tx.CategoryName)
 	}
-	if tx.Beneficiary != classify.BenBoth {
-		t.Errorf("бенефициар = %q, ожидался both из разбора", tx.Beneficiary)
+	// Получателя разбор не определяет: он остался тем, кого проставил
+	// деградированный путь, — плательщиком (фаза 2).
+	if len(tx.Recipients) != 1 || tx.Recipients[0] != gr.member.ID {
+		t.Errorf("получатели = %v, ожидался плательщик %d", tx.Recipients, gr.member.ID)
 	}
 }
 
@@ -115,20 +136,20 @@ func TestBackfillRestoresLostAmounts(t *testing.T) {
 	// обязан её дописать, иначе она потеряна навсегда.
 	llm := &stubLLM{items: []classify.RawItem{
 		{Amount: "1200", Description: "пятёрочка", Category: "Продукты",
-			Beneficiary: classify.BenBoth, Kind: classify.KindExpense, DaysAgo: 1},
+			Kind: classify.KindExpense, DaysAgo: 1},
 		{Amount: "400", Description: "такси", Category: "Такси",
-			Beneficiary: classify.BenPayer, Kind: classify.KindExpense, DaysAgo: 1},
+			Kind: classify.KindExpense, DaysAgo: 1},
 	}}
 	budget := classify.NewBudget(2_000_000, &zeroUsage{}, nil, quietLog())
-	w, store := newBackfill(t, llm, classify.NewBreaker(time.Minute, quietLog()), budget)
+	w, gr := newBackfill(t, llm, classify.NewBreaker(time.Minute, quietLog()), budget)
 
 	ctx := context.Background()
-	id := degradedTx(t, store, 505, "1200", "вчера пятёрочка 1200 и такси 400")
+	id := degradedTx(t, gr, "1200", "вчера пятёрочка 1200 и такси 400")
 	w.Tick(ctx)
 
 	from := time.Now().AddDate(0, 0, -3)
 	to := time.Now().AddDate(0, 0, 1)
-	rows, err := store.Expenses(ctx, from, to)
+	rows, err := gr.g.Expenses(ctx, from, to)
 	if err != nil {
 		t.Fatalf("расходы: %v", err)
 	}
@@ -137,7 +158,7 @@ func TestBackfillRestoresLostAmounts(t *testing.T) {
 	}
 
 	// И дата обеих — вчерашняя, как сказала модель.
-	tx, _ := store.Transaction(ctx, id)
+	tx, _ := gr.g.Transaction(ctx, id)
 	if got := time.Since(tx.SpentAt).Hours(); got < 20 || got > 28 {
 		t.Errorf("дата траты сдвинута на %.0f часов, ожидались сутки (days_ago=1)", got)
 	}
@@ -148,20 +169,20 @@ func TestBackfillFixesKindAndDoesNotMemorizeIncome(t *testing.T) {
 	// вид операции, иначе зарплата попадёт в «Всего» отчёта.
 	llm := &stubLLM{items: []classify.RawItem{{
 		Amount: "50000", Description: "зарплата", Category: "Прочее",
-		Beneficiary: classify.BenPayer, Kind: classify.KindIncome,
+		Kind: classify.KindIncome,
 	}}}
 	budget := classify.NewBudget(2_000_000, &zeroUsage{}, nil, quietLog())
-	w, store := newBackfill(t, llm, classify.NewBreaker(time.Minute, quietLog()), budget)
+	w, gr := newBackfill(t, llm, classify.NewBreaker(time.Minute, quietLog()), budget)
 
 	ctx := context.Background()
-	id := degradedTx(t, store, 506, "50000", "зарплата 50000")
+	id := degradedTx(t, gr, "50000", "зарплата 50000")
 	w.Tick(ctx)
 
-	tx, _ := store.Transaction(ctx, id)
+	tx, _ := gr.g.Transaction(ctx, id)
 	if tx.Kind != classify.KindIncome {
 		t.Errorf("вид операции = %q, ожидался income", tx.Kind)
 	}
-	hits, err := store.LookupWords(ctx, 506, []string{"зарплата"})
+	hits, err := gr.g.LookupWords(ctx, gr.member.UserID, []string{"зарплата"})
 	if err != nil {
 		t.Fatalf("словарь: %v", err)
 	}
@@ -175,13 +196,13 @@ func TestBackfillClosesStaleRecord(t *testing.T) {
 	// надо закрыть, иначе воркер будет ходить в сеть по ней вечно.
 	llm := &stubLLM{err: &classify.Error{Kind: storage.ErrKindSchema, Err: context.Canceled}}
 	budget := classify.NewBudget(2_000_000, &zeroUsage{}, nil, quietLog())
-	w, store := newBackfill(t, llm, classify.NewBreaker(time.Minute, quietLog()), budget)
+	w, gr := newBackfill(t, llm, classify.NewBreaker(time.Minute, quietLog()), budget)
 
 	ctx := context.Background()
-	id := degradedTx(t, store, 507, "600", "600 непонятное")
+	id := degradedTx(t, gr, "600", "600 непонятное")
 
 	w.Tick(ctx)
-	if tx, _ := store.Transaction(ctx, id); !tx.NeedsClassification {
+	if tx, _ := gr.g.Transaction(ctx, id); !tx.NeedsClassification {
 		t.Fatal("свежую запись закрывать рано — модель могла отвечать не по схеме разово")
 	}
 
@@ -189,7 +210,7 @@ func TestBackfillClosesStaleRecord(t *testing.T) {
 	w.now = func() time.Time { return time.Now().Add(3 * time.Hour) }
 	w.Tick(ctx)
 
-	tx, _ := store.Transaction(ctx, id)
+	tx, _ := gr.g.Transaction(ctx, id)
 	if tx.NeedsClassification {
 		t.Error("зависшая запись должна закрываться, а не запрашиваться вечно")
 	}
@@ -205,15 +226,15 @@ func TestBackfillSkipsTickWhenBreakerOpen(t *testing.T) {
 		breaker.Record(&classify.Error{Kind: storage.ErrKindQuota, Err: context.DeadlineExceeded})
 	}
 	budget := classify.NewBudget(2_000_000, &zeroUsage{}, nil, quietLog())
-	w, store := newBackfill(t, llm, breaker, budget)
+	w, gr := newBackfill(t, llm, breaker, budget)
 
-	id := degradedTx(t, store, 502, "700", "700 что-то")
+	id := degradedTx(t, gr, "700", "700 что-то")
 	w.Tick(context.Background())
 
 	if llm.calls != 0 {
 		t.Errorf("сетевых вызовов %d, при открытом breaker тик пропускается целиком (§12)", llm.calls)
 	}
-	tx, _ := store.Transaction(context.Background(), id)
+	tx, _ := gr.g.Transaction(context.Background(), id)
 	if !tx.NeedsClassification {
 		t.Error("запись должна остаться в очереди")
 	}
@@ -222,9 +243,9 @@ func TestBackfillSkipsTickWhenBreakerOpen(t *testing.T) {
 func TestBackfillSkipsTickWhenBudgetExhausted(t *testing.T) {
 	llm := &stubLLM{}
 	budget := classify.NewBudget(1000, &fixedUsage{total: 1000}, nil, quietLog())
-	w, store := newBackfill(t, llm, classify.NewBreaker(time.Minute, quietLog()), budget)
+	w, gr := newBackfill(t, llm, classify.NewBreaker(time.Minute, quietLog()), budget)
 
-	degradedTx(t, store, 503, "800", "800 что-то")
+	degradedTx(t, gr, "800", "800 что-то")
 	w.Tick(context.Background())
 
 	if llm.calls != 0 {
@@ -238,21 +259,24 @@ func TestBackfillClosesUnparsableRecord(t *testing.T) {
 	// минут и жечь токены.
 	llm := &stubLLM{items: []classify.RawItem{{
 		Amount: "999999", Description: "ерунда", Category: "Продукты",
-		Beneficiary: classify.BenBoth, Kind: classify.KindExpense,
+		Kind: classify.KindExpense,
 	}}}
 	budget := classify.NewBudget(2_000_000, &zeroUsage{}, nil, quietLog())
-	w, store := newBackfill(t, llm, classify.NewBreaker(time.Minute, quietLog()), budget)
+	w, gr := newBackfill(t, llm, classify.NewBreaker(time.Minute, quietLog()), budget)
 
-	id := degradedTx(t, store, 504, "900", "900 непонятное")
+	id := degradedTx(t, gr, "900", "900 непонятное")
 	w.Tick(context.Background())
 	w.Tick(context.Background())
 
-	tx, _ := store.Transaction(context.Background(), id)
+	tx, _ := gr.g.Transaction(context.Background(), id)
 	if tx.NeedsClassification {
 		t.Error("неразобранная запись должна закрываться, а не висеть в очереди вечно")
 	}
-	if tx.CategoryName != classify.CategoryOther {
-		t.Errorf("категория = %q, ожидалось «%s»", tx.CategoryName, classify.CategoryOther)
+	if tx.CategoryName != "Прочее" {
+		t.Errorf("категория = %q, ожидалось «Прочее»", tx.CategoryName)
+	}
+	if !tx.NeedsReview {
+		t.Error("категорию выбрал не человек и не модель — запись надо пометить на проверку")
 	}
 	if llm.calls != 1 {
 		t.Errorf("сетевых вызовов %d, ожидался один — второй тик уже не должен её брать", llm.calls)

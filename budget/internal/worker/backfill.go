@@ -77,10 +77,15 @@ func (w *Backfill) Tick(ctx context.Context) {
 
 // process доводит одну запись до разобранного состояния.
 func (w *Backfill) process(ctx context.Context, tx storage.Transaction) {
-	res, err := w.classifier.Classify(ctx, tx.PayerID, tx.RawText)
+	// Запись принадлежит группе — и словарь, и категории берутся у неё.
+	g := w.store.ForGroup(tx.GroupID)
+
+	res, err := w.classifier.Classify(ctx, classify.Scope{
+		UserID: tx.PayerUserID, Dict: g, Usage: g,
+	}, tx.RawText)
 	if err != nil {
 		w.log.Warn("добор не удался", "err", err, "tx", tx.ID)
-		w.markOther(ctx, tx)
+		w.markOther(ctx, g, tx)
 		return
 	}
 
@@ -89,7 +94,7 @@ func (w *Backfill) process(ctx context.Context, tx storage.Transaction) {
 			// Разобрать не выходит и не выйдет — закрываем, чтобы запись
 			// не возвращалась каждые десять минут.
 			w.log.Warn("запись закрыта без разбора", "tx", tx.ID, "причина", res.Reason)
-			w.markOther(ctx, tx)
+			w.markOther(ctx, g, tx)
 			return
 		}
 		w.log.Info("добор отложен", "tx", tx.ID, "причина", res.Reason)
@@ -100,12 +105,12 @@ func (w *Backfill) process(ctx context.Context, tx storage.Transaction) {
 	if !ok {
 		w.log.Warn("модель не нашла в сообщении эту сумму",
 			"tx", tx.ID, "сумма", tx.Amount.String(), "raw_text", tx.RawText)
-		w.markOther(ctx, tx)
+		w.markOther(ctx, g, tx)
 		return
 	}
 
-	updated, err := w.store.ApplyClassification(ctx, tx.ID, tx.PayerID,
-		item.CategoryID, item.Beneficiary, item.Kind, spentAt(tx, item.DaysAgo))
+	updated, err := g.ApplyClassification(ctx, tx.ID,
+		item.CategoryID, item.Kind, spentAt(tx, item.DaysAgo))
 	if err != nil {
 		w.log.Error("не проставил разбор", "err", err, "tx", tx.ID)
 		return
@@ -114,51 +119,62 @@ func (w *Backfill) process(ctx context.Context, tx storage.Transaction) {
 		// Запись успели удалить, пока мы ходили в модель.
 		return
 	}
-	w.remember(ctx, tx.PayerID, item)
+	w.remember(ctx, g, tx.PayerUserID, item)
 
 	// Деградированный путь сохраняет только первую сумму (§8). Остальные
 	// траты того же сообщения дошли до нас в raw_text — теперь, когда модель
 	// ответила, их надо записать, иначе они потеряны навсегда.
-	w.saveMissing(ctx, tx, res.Items, item)
+	w.saveMissing(ctx, g, tx, res.Items, item)
 
 	w.log.Info("категория добрана", "tx", tx.ID, "вид", item.Kind)
 }
 
 // saveMissing дописывает траты из того же сообщения, которых не хватало.
-func (w *Backfill) saveMissing(ctx context.Context, tx storage.Transaction, items []classify.Item, applied classify.Item) {
+func (w *Backfill) saveMissing(ctx context.Context, g *storage.GroupStore,
+	tx storage.Transaction, items []classify.Item, applied classify.Item) {
 	for i, item := range items {
 		if item.Amount.Equal(applied.Amount) && item.Description == applied.Description {
 			continue
 		}
-		id, err := w.store.InsertTransaction(ctx, storage.Transaction{
-			PayerID:     tx.PayerID,
-			Beneficiary: item.Beneficiary,
-			Kind:        item.Kind,
-			Amount:      item.Amount,
-			Description: item.Description,
-			CategoryID:  item.CategoryID,
-			RawText:     tx.RawText,
-			SpentAt:     spentAt(tx, item.DaysAgo),
+		id, err := g.InsertTransaction(ctx, storage.Transaction{
+			PayerMemberID: tx.PayerMemberID,
+			Recipients:    recipientsOf(tx.PayerMemberID, item.Kind),
+			Kind:          item.Kind,
+			Amount:        item.Amount,
+			Description:   item.Description,
+			CategoryID:    item.CategoryID,
+			RawText:       tx.RawText,
+			SpentAt:       spentAt(tx, item.DaysAgo),
 		})
 		if err != nil {
 			w.log.Error("не записал добранную трату", "err", err, "tx", tx.ID, "элемент", i)
 			continue
 		}
-		w.remember(ctx, tx.PayerID, item)
+		w.remember(ctx, g, tx.PayerUserID, item)
 		w.log.Info("дописана трата из того же сообщения",
 			"tx", id, "исходная", tx.ID, "сумма", item.Amount.String())
 	}
 }
 
-// remember кладёт слова в личный кэш. Только расходы: быстрый путь всегда
+// recipientsOf — на кого записать трату. Пока всегда на плательщика: модель
+// получателя не определяет, а «на всю группу» — это утверждение, которого
+// никто не делал (фаза 2). У перевода и дохода получателя нет вовсе.
+func recipientsOf(payerMemberID int64, kind string) []int64 {
+	if kind != classify.KindExpense {
+		return nil
+	}
+	return []int64{payerMemberID}
+}
+
+// remember кладёт слова в личный словарь. Только расходы: быстрый путь всегда
 // собирает expense, и запомненный доход во второй раз стал бы тратой.
-func (w *Backfill) remember(ctx context.Context, userID int64, item classify.Item) {
+func (w *Backfill) remember(ctx context.Context, g *storage.GroupStore, userID int64, item classify.Item) {
 	if item.CategoryID == nil || item.Kind != classify.KindExpense {
 		return
 	}
 	for _, word := range item.Words {
-		if err := w.store.UpsertWord(ctx, userID, word, *item.CategoryID,
-			item.Beneficiary, storage.SourceLLM); err != nil {
+		if err := g.UpsertWord(ctx, userID, word, *item.CategoryID,
+			nil, storage.SourceLLM); err != nil {
 			w.log.Warn("не запомнил слово", "err", err, "word", word)
 		}
 	}
@@ -166,21 +182,23 @@ func (w *Backfill) remember(ctx context.Context, userID int64, item classify.Ite
 
 // markOther закрывает запись категорией «Прочее»: разобрать её не вышло,
 // но и висеть в очереди вечно она не должна.
-func (w *Backfill) markOther(ctx context.Context, tx storage.Transaction) {
-	cats, err := w.store.Categories(ctx)
+func (w *Backfill) markOther(ctx context.Context, g *storage.GroupStore, tx storage.Transaction) {
+	cats, err := g.Categories(ctx)
 	if err != nil {
 		w.log.Error("не прочитал категории", "err", err)
 		return
 	}
-	for _, c := range cats {
-		if c.Name == classify.CategoryOther {
-			// Помечаем на проверку: категорию выбрал не человек и не модель,
-			// а мы сами, лишь бы запись не висела в очереди вечно.
-			if _, err := w.store.MarkForReview(ctx, tx.ID, c.ID); err != nil {
-				w.log.Error("не закрыл запись", "err", err, "tx", tx.ID)
-			}
-			return
-		}
+	other := classify.FallbackCategory(cats)
+	if other == nil {
+		// Группа удалила категорию-свалку. Оставить запись в очереди значит
+		// запрашивать модель по ней каждые десять минут вечно.
+		w.log.Error("в группе нет категории для неразобранного", "group", tx.GroupID, "tx", tx.ID)
+		return
+	}
+	// Помечаем на проверку: категорию выбрал не человек и не модель,
+	// а мы сами, лишь бы запись не висела в очереди вечно.
+	if _, err := g.MarkForReview(ctx, tx.ID, other.ID); err != nil {
+		w.log.Error("не закрыл запись", "err", err, "tx", tx.ID)
 	}
 }
 

@@ -5,15 +5,6 @@ import (
 	"time"
 )
 
-// User — участник бюджета из whitelist.
-type User struct {
-	ID   int64
-	Name string
-	// AvatarAt — когда поставили своё фото профиля; nil, если своего нет и
-	// аватарка берётся у Telegram. Он же версия картинки для URL.
-	AvatarAt *time.Time
-}
-
 // MaxNameLen — потолок длины имени.
 const MaxNameLen = 32
 
@@ -44,26 +35,6 @@ func trimTo(s string, n int) string {
 		return s
 	}
 	return string(r[:n])
-}
-
-// Users возвращает всех известных боту пользователей. Нужен отчёту: чтобы
-// понять, кто такой partner, надо знать второго (§10).
-func (s *Store) Users(ctx context.Context) ([]User, error) {
-	rows, err := s.pool.Query(ctx, `select id, name, avatar_set_at from users order by id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []User
-	for rows.Next() {
-		var u User
-		if err := rows.Scan(&u.ID, &u.Name, &u.AvatarAt); err != nil {
-			return nil, err
-		}
-		out = append(out, u)
-	}
-	return out, rows.Err()
 }
 
 // Avatar — своё фото профиля. nil означает, что его не ставили: тогда

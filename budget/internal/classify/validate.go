@@ -2,7 +2,6 @@ package classify
 
 import (
 	"log/slog"
-	"strconv"
 	"strings"
 
 	"github.com/shopspring/decimal"
@@ -15,9 +14,11 @@ import (
 // Выполняется всегда, даже если ответ прошёл JSON-схему: схема гарантирует
 // форму, но не смысл.
 //
-// payerID нужен умолчаниям категорий: у категории адресатом может стоять
-// конкретный человек, а в транзакции хранится отношение к плательщику.
-func Validate(raw []RawItem, text string, cats []storage.Category, payerID int64, log *slog.Logger) []Item {
+// Получателя здесь больше нет: с переходом на группы модель его не определяет,
+// и разложить трату по участникам можно только руками. Правило «умолчание
+// категории важнее догадки модели» вернётся в фазе 2 вместе с промптом,
+// который знает имена участников.
+func Validate(raw []RawItem, text string, cats []storage.Category, log *slog.Logger) []Item {
 	amounts := tokens.Extract(text)
 	out := make([]Item, 0, len(raw))
 
@@ -44,46 +45,31 @@ func Validate(raw []RawItem, text string, cats []storage.Category, payerID int64
 		item := Item{
 			Amount:      amount,
 			Description: trimTo(strings.TrimSpace(r.Description), 64),
-			Beneficiary: r.Beneficiary,
 			Kind:        r.Kind,
 			DaysAgo:     r.DaysAgo,
 		}
 
-		// 3. Категория должна быть из таблицы, иначе «Прочее».
+		// 3. Категория должна быть из списка группы, иначе «Прочее».
 		cat := categoryByName(cats, strings.TrimSpace(r.Category))
 		if cat == nil {
-			cat = categoryByName(cats, CategoryOther)
+			cat = FallbackCategory(cats)
 		}
 		if cat != nil {
 			id := cat.ID
 			item.CategoryID = &id
 		}
 
-		// 4-5. Значения вне перечисления — к безопасному умолчанию.
-		if !isBeneficiary(item.Beneficiary) {
-			item.Beneficiary = BenPayer
-		}
-
-		// Если в сообщении про получателя не сказано, беневициара даёт не
-		// догадка модели, а умолчание категории: «Такси — на себя», «Продукты —
-		// на двоих» настраивается людьми под свои привычки и не меняется от
-		// формулировки к формулировке.
-		if !r.BeneficiaryStated && cat != nil {
-			if def := cat.BeneficiaryFor(payerID); isBeneficiary(def) {
-				item.Beneficiary = def
-			}
-		}
+		// 4. Значение вне перечисления — к безопасному умолчанию.
 		if !isKind(item.Kind) {
 			item.Kind = KindExpense
 		}
 
-		// 6. Перевод партнёру — это не трата на категорию.
+		// 5. Перевод — это не трата на категорию.
 		if item.Kind == KindTransfer {
-			item.Beneficiary = BenPartner
 			item.CategoryID = nil
 		}
 
-		// 7. Дата в разумных пределах.
+		// 6. Дата в разумных пределах.
 		if item.DaysAgo < 0 {
 			item.DaysAgo = 0
 		}
@@ -91,7 +77,7 @@ func Validate(raw []RawItem, text string, cats []storage.Category, payerID int64
 			item.DaysAgo = 30
 		}
 
-		// 8. Пустое описание — из исходного текста.
+		// 7. Пустое описание — из исходного текста.
 		if item.Description == "" {
 			item.Description = Describe(text)
 		}
@@ -123,14 +109,6 @@ func amountsToStrings(amounts []decimal.Decimal) string {
 		parts = append(parts, a.String())
 	}
 	return strings.Join(parts, ",")
-}
-
-func isBeneficiary(s string) bool {
-	if s == BenPayer || s == BenPartner || s == BenBoth {
-		return true
-	}
-	id, err := strconv.ParseInt(strings.TrimPrefix(s, "group:"), 10, 32)
-	return strings.HasPrefix(s, "group:") && err == nil && id > 0
 }
 
 func isKind(s string) bool {

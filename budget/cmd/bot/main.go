@@ -83,11 +83,11 @@ func main() {
 		FolderID: cfg.YandexFolderID,
 		Model:    cfg.LLMModel,
 		Timeout:  cfg.LLMTimeout,
-	}, store, log)
+	}, log)
 	breaker := classify.NewBreaker(cfg.LLMBreakerCooldown, log)
 	budget := classify.NewBudget(cfg.LLMMonthlyTokenBudget, store,
 		func(text string) { notifyOwner(text) }, log)
-	classifier := classify.NewService(store, llm, breaker, budget, log)
+	classifier := classify.NewService(llm, breaker, budget, log)
 
 	var b *bot.Bot
 	for {

@@ -38,15 +38,21 @@ func (s *Store) MonthlyUsage(ctx context.Context) (MonthUsage, error) {
 
 // RecordUsage пишет строку про вызов LLM — успешный или нет. Без этой таблицы
 // невозможно понять, куда уходит грант (§6).
-func (s *Store) RecordUsage(ctx context.Context, model string, promptTokens, completionTokens int, ok bool, errorKind string) error {
+//
+// Метод скоупнутый: токены жжёт разбор сообщения, а сообщение всегда пишет
+// участник группы. Тарификация групп будет позже, но колонка заполняется
+// сразу — добавить её в таблицу с готовой историей дороже, чем завести
+// пустой.
+func (g *GroupStore) RecordUsage(ctx context.Context, model string,
+	promptTokens, completionTokens int, ok bool, errorKind string) error {
 	var kind any
 	if errorKind != "" {
 		kind = errorKind
 	}
-	_, err := s.pool.Exec(ctx, `
-		insert into llm_usage (model, prompt_tokens, completion_tokens, ok, error_kind)
-		values ($1, $2, $3, $4, $5)`,
-		model, promptTokens, completionTokens, ok, kind)
+	_, err := g.pool.Exec(ctx, `
+		insert into llm_usage (group_id, model, prompt_tokens, completion_tokens, ok, error_kind)
+		values ($1, $2, $3, $4, $5, $6)`,
+		g.groupID, model, promptTokens, completionTokens, ok, kind)
 	return err
 }
 

@@ -23,6 +23,12 @@ const greeting = `Привет! Я веду общий бюджет.
 
 const noAmountReply = "Не вижу сумму. Например: 600 лимонад"
 
+// noGroupReply — человек боту известен, но ни в какой группе не состоит.
+// Записывать его траты некуда: бюджет принадлежит группе, а не человеку.
+const noGroupReply = `Ты пока не в группе — записывать траты некуда.
+
+Создай свою в приложении или попроси администратора добавить тебя.`
+
 func (b *Bot) onStart(c tele.Context) error {
 	ctx, cancel := b.ctx()
 	defer cancel()
@@ -30,6 +36,15 @@ func (b *Bot) onStart(c tele.Context) error {
 	if err := b.store.EnsureUser(ctx, c.Sender().ID, displayName(c.Sender())); err != nil {
 		b.log.Error("запись участника", "err", err, "user_id", c.Sender().ID)
 		return c.Send("Не смог записать тебя в базу, попробуй ещё раз.")
+	}
+
+	_, ok, err := b.store.MemberOf(ctx, c.Sender().ID)
+	if err != nil {
+		b.log.Error("поиск группы", "err", err, "user_id", c.Sender().ID)
+		return c.Send("База не отвечает, попробуй ещё раз.")
+	}
+	if !ok {
+		return c.Send(noGroupReply)
 	}
 	return c.Send(greeting)
 }
@@ -45,16 +60,29 @@ func (b *Bot) onText(c tele.Context) error {
 	}
 
 	userCtx, cancelUser := b.ctx()
+	// Пользователь мог начать с траты, не нажав /start.
 	err := b.store.EnsureUser(userCtx, sender.ID, displayName(sender))
+	var (
+		member  storage.Member
+		inGroup bool
+	)
+	if err == nil {
+		member, inGroup, err = b.store.MemberOf(userCtx, sender.ID)
+	}
 	cancelUser()
 	if err != nil {
-		// Пользователь мог начать с траты, не нажав /start.
 		b.log.Error("запись участника", "err", err, "user_id", sender.ID)
 		return c.Send("База не отвечает, попробуй ещё раз.")
 	}
+	if !inGroup {
+		return c.Send(noGroupReply)
+	}
+	group := b.store.ForGroup(member.GroupID)
 
 	classifyCtx, cancelClassify := b.classifyCtx()
-	res, err := b.classifier.Classify(classifyCtx, sender.ID, text)
+	res, err := b.classifier.Classify(classifyCtx, classify.Scope{
+		UserID: sender.ID, Dict: group, Usage: group,
+	}, text)
 	cancelClassify()
 	if err != nil {
 		if errors.Is(err, classify.ErrNoAmount) {
@@ -69,14 +97,14 @@ func (b *Bot) onText(c tele.Context) error {
 	ctx, cancel := b.ctx()
 	defer cancel()
 
-	cats, err := b.store.Categories(ctx)
+	cats, err := group.Categories(ctx)
 	if err != nil {
 		b.log.Warn("не прочитал категории", "err", err)
 	}
 
 	now := time.Now()
 	for _, item := range res.Items {
-		tx, err := b.save(ctx, sender.ID, text, item, cats, now)
+		tx, err := b.save(ctx, group, member, text, item, cats, now)
 		if err != nil {
 			b.log.Error("запись траты", "err", err, "user_id", sender.ID, "raw_text", text)
 			if sendErr := c.Send("Не смог записать трату. Напиши ещё раз."); sendErr != nil {
@@ -121,11 +149,17 @@ func parseCommand(text string) (name, payload string) {
 	return strings.ToLower(name), strings.TrimSpace(payload)
 }
 
-// save записывает трату и запоминает слова описания в личном кэше (§8).
-func (b *Bot) save(ctx context.Context, userID int64, raw string, item classify.Item, cats []storage.Category, now time.Time) (storage.Transaction, error) {
+// save записывает трату и запоминает слова описания в личном словаре (§8).
+//
+// Получатель — всегда плательщик: модель его не определяет, а «на всю группу»
+// было бы утверждением, которого никто не делал. Разложить трату по людям
+// можно будет в приложении (фаза 2, фаза 5).
+func (b *Bot) save(ctx context.Context, g *storage.GroupStore, member storage.Member,
+	raw string, item classify.Item, cats []storage.Category, now time.Time) (storage.Transaction, error) {
 	tx := storage.Transaction{
-		PayerID:             userID,
-		Beneficiary:         item.Beneficiary,
+		GroupID:             member.GroupID,
+		PayerMemberID:       member.ID,
+		PayerUserID:         member.UserID,
 		Kind:                item.Kind,
 		Amount:              item.Amount,
 		Description:         item.Description,
@@ -134,8 +168,11 @@ func (b *Bot) save(ctx context.Context, userID int64, raw string, item classify.
 		NeedsClassification: item.NeedsClassification,
 		SpentAt:             now.AddDate(0, 0, -item.DaysAgo),
 	}
+	if item.Kind == classify.KindExpense {
+		tx.Recipients = []int64{member.ID}
+	}
 
-	id, err := b.store.InsertTransaction(ctx, tx)
+	id, err := g.InsertTransaction(ctx, tx)
 	if err != nil {
 		return storage.Transaction{}, err
 	}
@@ -143,22 +180,22 @@ func (b *Bot) save(ctx context.Context, userID int64, raw string, item classify.
 
 	if item.CategoryID != nil {
 		tx.CategoryName = categoryName(cats, *item.CategoryID)
-		b.rememberWords(ctx, userID, item)
+		b.rememberWords(ctx, g, member.UserID, item)
 	}
 	return tx, nil
 }
 
-// rememberWords кладёт слова описания в личный кэш, чтобы в следующий раз
+// rememberWords кладёт слова описания в личный словарь, чтобы в следующий раз
 // ответ пришёл мгновенно и без обращения к API (§8).
 //
 // Запоминаются только расходы: быстрый путь всегда собирает expense, и
 // запомненный доход или перевод во второй раз записался бы тратой.
-func (b *Bot) rememberWords(ctx context.Context, userID int64, item classify.Item) {
+func (b *Bot) rememberWords(ctx context.Context, g *storage.GroupStore, userID int64, item classify.Item) {
 	if item.CategoryID == nil || item.Kind != classify.KindExpense {
 		return
 	}
 	for _, w := range item.Words {
-		if err := b.store.UpsertWord(ctx, userID, w, *item.CategoryID, item.Beneficiary, storage.SourceLLM); err != nil {
+		if err := g.UpsertWord(ctx, userID, w, *item.CategoryID, nil, storage.SourceLLM); err != nil {
 			b.log.Warn("не запомнил слово", "err", err, "word", w)
 		}
 	}

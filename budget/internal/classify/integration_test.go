@@ -5,13 +5,13 @@ import (
 	"os"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"budget/internal/storage"
 )
 
-// testStore — то же хранилище, что у бота, на настоящей базе.
-func testStore(t *testing.T) *storage.Store {
+// testGroup поднимает настоящее хранилище и заводит группу из одного человека.
+// Проверять словарь фейком бессмысленно: весь смысл в том, что слово доезжает
+// до базы и возвращается оттуда.
+func testGroup(t *testing.T) (*storage.Store, *storage.GroupStore, storage.Member) {
 	t.Helper()
 
 	dsn := os.Getenv("TEST_DATABASE_URL")
@@ -29,46 +29,40 @@ func testStore(t *testing.T) *storage.Store {
 		t.Fatalf("подключение: %v", err)
 	}
 	t.Cleanup(s.Close)
-	return s
-}
 
-// clearWord убирает слово из личного кэша напрямую: хранилище такого метода
-// не даёт и не должно, это нужно только тесту.
-func clearWord(t *testing.T, userID int64, word string) {
-	t.Helper()
-
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, os.Getenv("TEST_DATABASE_URL"))
-	if err != nil {
-		t.Fatalf("подключение для очистки: %v", err)
-	}
-	defer pool.Close()
-
-	if _, err := pool.Exec(ctx,
-		`delete from word_map where user_id = $1 and word = $2`, userID, word); err != nil {
+	if _, err := s.Pool().Exec(ctx, `
+		truncate transactions, tx_recipients, word_map, llm_usage,
+		         categories, invites, members, groups, users
+		restart identity cascade`); err != nil {
 		t.Fatalf("очистка: %v", err)
 	}
-}
-
-// TestSecondTimeResolvesFromCache — проверка фазы 4 целиком: первое сообщение
-// уходит в модель, слово запоминается, второе такое же обходится без сети.
-func TestSecondTimeResolvesFromCache(t *testing.T) {
-	store := testStore(t)
-	ctx := context.Background()
 
 	const userID = int64(777)
-	if err := store.EnsureUser(ctx, userID, "Тест"); err != nil {
+	if err := s.EnsureUser(ctx, userID, "Тест"); err != nil {
 		t.Fatalf("пользователь: %v", err)
 	}
-	// Слово заведомо не из затравки, но могло остаться от прошлого прогона.
-	clearWord(t, userID, "лимонадница")
+	g, member, err := s.CreateGroup(ctx, "Тест", userID)
+	if err != nil {
+		t.Fatalf("группа: %v", err)
+	}
+	return s, s.ForGroup(g.ID), member
+}
 
+// TestSecondTimeResolvesFromCache — проверка быстрого пути целиком: первое
+// сообщение уходит в модель, слово запоминается, второе такое же обходится
+// без сети.
+func TestSecondTimeResolvesFromCache(t *testing.T) {
+	_, group, member := testGroup(t)
+	ctx := context.Background()
+
+	// Слово заведомо не из затравки.
 	llm := &countingLLM{items: []RawItem{
-		raw("600", "лимонадница", "Продукты", BenBoth, KindExpense, 0),
+		raw("600", "лимонадница", "Продукты", KindExpense, 0),
 	}}
-	svc := NewService(store, llm, openGate{}, denyBudget{}, quietLog())
+	svc := NewService(llm, openGate{}, denyBudget{}, quietLog())
+	sc := Scope{UserID: member.UserID, Dict: group, Usage: group}
 
-	first, err := svc.Classify(ctx, userID, "600 лимонадница")
+	first, err := svc.Classify(ctx, sc, "600 лимонадница")
 	if err != nil {
 		t.Fatalf("первый разбор: %v", err)
 	}
@@ -78,24 +72,24 @@ func TestSecondTimeResolvesFromCache(t *testing.T) {
 
 	// Так же, как это делает обработчик бота после успешной записи (§8).
 	for _, w := range first.Items[0].Words {
-		if err := store.UpsertWord(ctx, userID, w, *first.Items[0].CategoryID,
-			first.Items[0].Beneficiary, storage.SourceLLM); err != nil {
-			t.Fatalf("запись в кэш: %v", err)
+		if err := group.UpsertWord(ctx, member.UserID, w, *first.Items[0].CategoryID,
+			nil, storage.SourceLLM); err != nil {
+			t.Fatalf("запись в словарь: %v", err)
 		}
 	}
 
-	second, err := svc.Classify(ctx, userID, "лимонадница 750")
+	second, err := svc.Classify(ctx, sc, "лимонадница 750")
 	if err != nil {
 		t.Fatalf("второй разбор: %v", err)
 	}
 	if llm.calls != 1 {
-		t.Errorf("сетевых вызовов %d, второй раз слово должно резолвиться из кэша", llm.calls)
+		t.Errorf("сетевых вызовов %d, второй раз слово должно резолвиться из словаря", llm.calls)
 	}
 	if second.Source != SourceCache {
 		t.Errorf("источник = %q, ожидался cache", second.Source)
 	}
 	if second.Items[0].CategoryID == nil || *second.Items[0].CategoryID != *first.Items[0].CategoryID {
-		t.Errorf("категория из кэша = %v, ожидалась та же, что у модели", second.Items[0].CategoryID)
+		t.Errorf("категория из словаря = %v, ожидалась та же, что у модели", second.Items[0].CategoryID)
 	}
 	if !second.Items[0].Amount.Equal(dec("750")) {
 		t.Errorf("сумма = %s, ожидалось 750", second.Items[0].Amount)

@@ -21,18 +21,12 @@ type RawItem struct {
 	Amount      json.Number `json:"amount"`
 	Description string      `json:"description"`
 	Category    string      `json:"category"`
-	Beneficiary string      `json:"beneficiary"`
 	Kind        string      `json:"kind"`
 	DaysAgo     int         `json:"days_ago"`
-
-	// BeneficiaryStated — сказано ли в сообщении, на кого потрачено, прямым
-	// текстом. Если нет, беневициара даёт не модель, а умолчание категории:
-	// свои привычки люди знают лучше (см. validate.go).
-	BeneficiaryStated bool `json:"beneficiary_stated"`
 }
 
 // UsageRecorder — куда писать расход токенов. После каждого вызова,
-// успешного или нет (§6).
+// успешного или нет (§6). Принадлежит группе: расход считается по ней.
 type UsageRecorder interface {
 	RecordUsage(ctx context.Context, model string, promptTokens, completionTokens int, ok bool, errorKind string) error
 }
@@ -67,7 +61,6 @@ type Yandex struct {
 	folderID string
 	model    string
 	timeout  time.Duration
-	usage    UsageRecorder
 	log      *slog.Logger
 }
 
@@ -80,7 +73,7 @@ type YandexConfig struct {
 	Timeout  time.Duration
 }
 
-func NewYandex(cfg YandexConfig, usage UsageRecorder, log *slog.Logger) *Yandex {
+func NewYandex(cfg YandexConfig, log *slog.Logger) *Yandex {
 	return &Yandex{
 		client:   &http.Client{},
 		baseURL:  strings.TrimRight(cfg.BaseURL, "/"),
@@ -88,7 +81,6 @@ func NewYandex(cfg YandexConfig, usage UsageRecorder, log *slog.Logger) *Yandex 
 		folderID: cfg.FolderID,
 		model:    cfg.Model,
 		timeout:  cfg.Timeout,
-		usage:    usage,
 		log:      log,
 	}
 }
@@ -100,7 +92,7 @@ func (y *Yandex) ModelURI() string {
 
 // Parse отправляет сообщение модели. Один ретрай при 5xx и таймауте,
 // backoff 500 мс. Ошибку квоты ретрай не лечит, поэтому для неё повтора нет.
-func (y *Yandex) Parse(ctx context.Context, text string, cats []storage.Category) ([]RawItem, error) {
+func (y *Yandex) Parse(ctx context.Context, usage UsageRecorder, text string, cats []storage.Category) ([]RawItem, error) {
 	const retryBackoff = 500 * time.Millisecond
 
 	var lastErr error
@@ -113,7 +105,7 @@ func (y *Yandex) Parse(ctx context.Context, text string, cats []storage.Category
 			}
 		}
 
-		items, err := y.call(ctx, text, cats)
+		items, err := y.call(ctx, usage, text, cats)
 		if err == nil {
 			return items, nil
 		}
@@ -129,7 +121,7 @@ func (y *Yandex) Parse(ctx context.Context, text string, cats []storage.Category
 	return nil, lastErr
 }
 
-func (y *Yandex) call(ctx context.Context, text string, cats []storage.Category) ([]RawItem, error) {
+func (y *Yandex) call(ctx context.Context, usage UsageRecorder, text string, cats []storage.Category) ([]RawItem, error) {
 	body, err := json.Marshal(y.request(text, cats))
 	if err != nil {
 		return nil, &Error{Kind: storage.ErrKindOther, Err: err}
@@ -152,7 +144,7 @@ func (y *Yandex) call(ctx context.Context, text string, cats []storage.Category)
 	resp, err := y.client.Do(req)
 	if err != nil {
 		kind := transportErrKind(ctx, callCtx, err)
-		y.record(ctx, 0, 0, false, kind)
+		y.record(ctx, usage, 0, 0, false, kind)
 		return nil, &Error{Kind: kind, Retryable: retryableKind(kind), Err: err}
 	}
 	defer resp.Body.Close()
@@ -160,13 +152,13 @@ func (y *Yandex) call(ctx context.Context, text string, cats []storage.Category)
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		kind := transportErrKind(ctx, callCtx, err)
-		y.record(ctx, 0, 0, false, kind)
+		y.record(ctx, usage, 0, 0, false, kind)
 		return nil, &Error{Kind: kind, Retryable: retryableKind(kind), Err: err}
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		kind := httpErrKind(resp.StatusCode, raw)
-		y.record(ctx, 0, 0, false, kind)
+		y.record(ctx, usage, 0, 0, false, kind)
 		return nil, &Error{
 			Kind: kind,
 			// Повторяем только поломку сервиса. Неверный ключ и битый запрос
@@ -189,7 +181,7 @@ func (y *Yandex) call(ctx context.Context, text string, cats []storage.Category)
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
-		y.record(ctx, 0, 0, false, storage.ErrKindSchema)
+		y.record(ctx, usage, 0, 0, false, storage.ErrKindSchema)
 		return nil, &Error{Kind: storage.ErrKindSchema, Err: err}
 	}
 
@@ -199,7 +191,7 @@ func (y *Yandex) call(ctx context.Context, text string, cats []storage.Category)
 	prompt, completion := envelope.Usage.PromptTokens, envelope.Usage.CompletionTokens
 
 	if len(envelope.Choices) == 0 {
-		y.record(ctx, prompt, completion, false, storage.ErrKindSchema)
+		y.record(ctx, usage, prompt, completion, false, storage.ErrKindSchema)
 		return nil, &Error{Kind: storage.ErrKindSchema, Err: errors.New("модель вернула пустой ответ")}
 	}
 
@@ -207,11 +199,11 @@ func (y *Yandex) call(ctx context.Context, text string, cats []storage.Category)
 		Items []RawItem `json:"items"`
 	}
 	if err := json.Unmarshal([]byte(envelope.Choices[0].Message.Content), &payload); err != nil {
-		y.record(ctx, prompt, completion, false, storage.ErrKindSchema)
+		y.record(ctx, usage, prompt, completion, false, storage.ErrKindSchema)
 		return nil, &Error{Kind: storage.ErrKindSchema, Err: fmt.Errorf("содержимое ответа не по схеме: %w", err)}
 	}
 
-	y.record(ctx, prompt, completion, true, "")
+	y.record(ctx, usage, prompt, completion, true, "")
 	return payload.Items, nil
 }
 
@@ -297,17 +289,6 @@ func responseFormat(cats []storage.Category) map[string]any {
 									"description": categoryDesc,
 									"enum":        names,
 								},
-								"beneficiary": map[string]any{
-									"type":        "string",
-									"description": "На кого потрачено",
-									"enum":        []string{BenPayer, BenPartner, BenBoth},
-								},
-								"beneficiary_stated": map[string]any{
-									"type": "boolean",
-									"description": "true, только если в сообщении прямо сказано, " +
-										"на кого потрачено («ей», «себе», «нам»). " +
-										"Если это твоя догадка по смыслу — false",
-								},
 								"kind": map[string]any{
 									"type":        "string",
 									"description": "Тип операции",
@@ -319,8 +300,7 @@ func responseFormat(cats []storage.Category) map[string]any {
 								},
 							},
 							"required": []string{
-								"amount", "description", "category", "beneficiary",
-								"beneficiary_stated", "kind", "days_ago",
+								"amount", "description", "category", "kind", "days_ago",
 							},
 						},
 					},
@@ -332,52 +312,55 @@ func responseFormat(cats []storage.Category) map[string]any {
 }
 
 // systemPrompt — смысл зафиксирован §6, few-shot примеры покрывают простую
-// трату, трату с получателем, две траты в одном сообщении, вчерашнюю дату,
-// перевод партнёру и доход.
+// трату, две траты в одном сообщении, вчерашнюю и позавчерашнюю дату, перевод
+// и доход.
+//
+// Получателя модель больше не определяет: в группе до десяти человек его надо
+// называть по имени, а имена участников в промпт пока не подставляются.
+// Примеры с «ей» убраны — они учили модель ровно тому, чего от неё теперь не
+// ждут (фаза 2).
 const systemPrompt = `Ты разбираешь короткие сообщения о личных тратах на русском языке. Пишут разговорно, с сокращениями и опечатками.
 
 Правила:
 - Одно сообщение может содержать несколько трат — верни их отдельными элементами массива items.
 - amount — число ровно так, как записано в сообщении. Не пересчитывай его и не меняй разрядность. «к» означает тысячи: «5к» это 5000.
 - description — 1-3 слова по сути траты, без суммы и без указания, кому она.
-- beneficiary: payer — потрачено на автора сообщения, partner — на его партнёра, both — на обоих.
-- beneficiary_stated: true, только если про получателя сказано прямо — «ей», «себе», «нам», «для неё». Догадка по смыслу — это false.
-- kind: transfer — автор передал деньги партнёру, а не купил что-то. income — поступление денег. В остальных случаях expense.
+- kind: transfer — автор передал деньги другому человеку, а не купил что-то. income — поступление денег. В остальных случаях expense.
 - days_ago: 0, если про день ничего не сказано; 1 для «вчера»; 2 для «позавчера».
 
 Примеры разбора:
 
 "600 лимонад"
-{"items":[{"amount":600,"description":"лимонад","category":"Продукты","beneficiary":"both","beneficiary_stated":false,"kind":"expense","days_ago":0}]}
+{"items":[{"amount":600,"description":"лимонад","category":"Продукты","kind":"expense","days_ago":0}]}
 
 "такси 450 домой"
-{"items":[{"amount":450,"description":"такси","category":"Такси","beneficiary":"payer","beneficiary_stated":false,"kind":"expense","days_ago":0}]}
+{"items":[{"amount":450,"description":"такси","category":"Такси","kind":"expense","days_ago":0}]}
 
-"купил ей цветы 2500"
-{"items":[{"amount":2500,"description":"цветы","category":"Подарки","beneficiary":"partner","beneficiary_stated":true,"kind":"expense","days_ago":0}]}
+"купил цветы 2500"
+{"items":[{"amount":2500,"description":"цветы","category":"Подарки","kind":"expense","days_ago":0}]}
 
 "вчера взял в пятёрочке на 1200 и такси 400 домой"
-{"items":[{"amount":1200,"description":"пятёрочка","category":"Продукты","beneficiary":"both","beneficiary_stated":false,"kind":"expense","days_ago":1},{"amount":400,"description":"такси","category":"Такси","beneficiary":"payer","beneficiary_stated":false,"kind":"expense","days_ago":1}]}
+{"items":[{"amount":1200,"description":"пятёрочка","category":"Продукты","kind":"expense","days_ago":1},{"amount":400,"description":"такси","category":"Такси","kind":"expense","days_ago":1}]}
 
 "позавчера аптека 780"
-{"items":[{"amount":780,"description":"аптека","category":"Здоровье","beneficiary":"payer","beneficiary_stated":false,"kind":"expense","days_ago":2}]}
+{"items":[{"amount":780,"description":"аптека","category":"Здоровье","kind":"expense","days_ago":2}]}
 
-"скинул ей 5к"
-{"items":[{"amount":5000,"description":"перевод","category":"Прочее","beneficiary":"partner","beneficiary_stated":true,"kind":"transfer","days_ago":0}]}
+"скинул 5к"
+{"items":[{"amount":5000,"description":"перевод","category":"Прочее","kind":"transfer","days_ago":0}]}
 
 "зарплата 90000"
-{"items":[{"amount":90000,"description":"зарплата","category":"Прочее","beneficiary":"payer","beneficiary_stated":false,"kind":"income","days_ago":0}]}
+{"items":[{"amount":90000,"description":"зарплата","category":"Прочее","kind":"income","days_ago":0}]}
 
 "жкх 4300 и интернет 700"
-{"items":[{"amount":4300,"description":"жкх","category":"Коммуналка","beneficiary":"both","beneficiary_stated":false,"kind":"expense","days_ago":0},{"amount":700,"description":"интернет","category":"Связь и интернет","beneficiary":"payer","beneficiary_stated":false,"kind":"expense","days_ago":0}]}
+{"items":[{"amount":4300,"description":"жкх","category":"Коммуналка","kind":"expense","days_ago":0},{"amount":700,"description":"интернет","category":"Связь и интернет","kind":"expense","days_ago":0}]}
 
 Отвечай только JSON по схеме, без пояснений.`
 
-func (y *Yandex) record(ctx context.Context, prompt, completion int, ok bool, errorKind string) {
+func (y *Yandex) record(ctx context.Context, usage UsageRecorder, prompt, completion int, ok bool, errorKind string) {
 	// Запись расхода не должна пропасть из-за того, что истёк контекст запроса.
 	recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if err := y.usage.RecordUsage(recCtx, y.ModelURI(), prompt, completion, ok, errorKind); err != nil {
+	if err := usage.RecordUsage(recCtx, y.ModelURI(), prompt, completion, ok, errorKind); err != nil {
 		y.log.Error("не записал расход токенов", "err", err)
 	}
 }

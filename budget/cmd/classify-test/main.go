@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -18,11 +19,16 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, `использование: classify-test "вчера пятёрочка 1200 и такси 400"`)
+	// Разбор всегда идёт от имени конкретного человека в конкретной группе:
+	// и категории, и личный словарь принадлежат ей, а не боту.
+	userID := flag.Int64("user", 0, "telegram id, от чьего имени разбирать")
+	flag.Parse()
+
+	if flag.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, `использование: classify-test -user <id> "вчера пятёрочка 1200 и такси 400"`)
 		os.Exit(2)
 	}
-	text := strings.Join(os.Args[1:], " ")
+	text := strings.Join(flag.Args(), " ")
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	cfg, err := config.Load()
@@ -47,13 +53,26 @@ func main() {
 		FolderID: cfg.YandexFolderID,
 		Model:    cfg.LLMModel,
 		Timeout:  cfg.LLMTimeout,
-	}, store, log)
+	}, log)
 
-	// Разбор идёт от имени владельца бота: у него свой личный кэш слов.
+	if *userID == 0 {
+		*userID = cfg.OwnerID()
+	}
+	member, ok, err := store.MemberOf(ctx, *userID)
+	if err != nil {
+		log.Error("поиск группы", "err", err)
+		os.Exit(1)
+	}
+	if !ok {
+		log.Error("этот человек не состоит ни в одной группе — разбирать не от чьего имени",
+			"user_id", *userID)
+		os.Exit(1)
+	}
+
 	// Предохранители те же, что в боевом режиме, — проверять надо то же самое.
 	breaker := classify.NewBreaker(cfg.LLMBreakerCooldown, log)
 	budget := classify.NewBudget(cfg.LLMMonthlyTokenBudget, store, nil, log)
-	svc := classify.NewService(store, llm, breaker, budget, log)
+	svc := classify.NewService(llm, breaker, budget, log)
 
 	// Расход этого разбора считается как прирост llm_usage: заодно видно,
 	// появилась ли там вообще строка.
@@ -64,7 +83,10 @@ func main() {
 	}
 
 	start := time.Now()
-	res, err := svc.Classify(ctx, cfg.AllowedUserIDs[0], text)
+	group := store.ForGroup(member.GroupID)
+	res, err := svc.Classify(ctx, classify.Scope{
+		UserID: member.UserID, Dict: group, Usage: group,
+	}, text)
 	elapsed := time.Since(start)
 	after, usageErr := store.MonthlyUsage(ctx)
 
@@ -101,7 +123,6 @@ type printable struct {
 	Amount      string `json:"amount"`
 	Description string `json:"description"`
 	CategoryID  *int32 `json:"category_id"`
-	Beneficiary string `json:"beneficiary"`
 	Kind        string `json:"kind"`
 	DaysAgo     int    `json:"days_ago"`
 	Words       []string
@@ -114,7 +135,6 @@ func toPrintable(items []classify.Item) []printable {
 			Amount:      i.Amount.String(),
 			Description: i.Description,
 			CategoryID:  i.CategoryID,
-			Beneficiary: i.Beneficiary,
 			Kind:        i.Kind,
 			DaysAgo:     i.DaysAgo,
 			Words:       i.Words,

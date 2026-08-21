@@ -114,11 +114,17 @@ type exhaustedBudget struct{}
 
 func (exhaustedBudget) Allow(context.Context) bool { return false }
 
+// emptyScope — группа с пустым словарём: здесь проверяются предохранители,
+// а не быстрый путь.
+func emptyScope() Scope {
+	return Scope{UserID: 1, Dict: &fakeDict{}, Usage: noUsage{}}
+}
+
 func TestOpenBreakerSkipsNetworkAndDegrades(t *testing.T) {
 	llm := &countingLLM{}
-	svc := NewService(&fakeDict{}, llm, &closedBreaker{}, denyBudget{}, quietLog())
+	svc := NewService(llm, &closedBreaker{}, denyBudget{}, quietLog())
 
-	res, err := svc.Classify(context.Background(), 1, "600 лимонад")
+	res, err := svc.Classify(context.Background(), emptyScope(), "600 лимонад")
 	if err != nil {
 		t.Fatalf("запись не должна теряться ни при каких условиях (§8): %v", err)
 	}
@@ -130,9 +136,9 @@ func TestOpenBreakerSkipsNetworkAndDegrades(t *testing.T) {
 
 func TestExhaustedBudgetSkipsNetworkAndDegrades(t *testing.T) {
 	llm := &countingLLM{}
-	svc := NewService(&fakeDict{}, llm, openGate{}, exhaustedBudget{}, quietLog())
+	svc := NewService(llm, openGate{}, exhaustedBudget{}, quietLog())
 
-	res, err := svc.Classify(context.Background(), 1, "лимонад 600")
+	res, err := svc.Classify(context.Background(), emptyScope(), "лимонад 600")
 	if err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
@@ -145,16 +151,16 @@ func TestExhaustedBudgetSkipsNetworkAndDegrades(t *testing.T) {
 // failingLLM всегда возвращает ошибку сервиса.
 type failingLLM struct{ calls int }
 
-func (f *failingLLM) Parse(context.Context, string, []storage.Category) ([]RawItem, error) {
+func (f *failingLLM) Parse(context.Context, UsageRecorder, string, []storage.Category) ([]RawItem, error) {
 	f.calls++
 	return nil, httpErr()
 }
 
 func TestAPIFailureDegradesInsteadOfLosingRecord(t *testing.T) {
 	llm := &failingLLM{}
-	svc := NewService(&fakeDict{}, llm, openGate{}, denyBudget{}, quietLog())
+	svc := NewService(llm, openGate{}, denyBudget{}, quietLog())
 
-	res, err := svc.Classify(context.Background(), 1, "вчера пятёрочка 1200")
+	res, err := svc.Classify(context.Background(), emptyScope(), "вчера пятёрочка 1200")
 	if err != nil {
 		t.Fatalf("потеря записи из-за отказа API недопустима (§8): %v", err)
 	}
@@ -166,10 +172,10 @@ func TestAPIFailureDegradesInsteadOfLosingRecord(t *testing.T) {
 
 func TestEmptyItemsAfterValidationDegrade(t *testing.T) {
 	// Модель вернула сумму, которой нет в тексте, — всё отфильтровалось.
-	llm := &countingLLM{items: []RawItem{raw("99999", "лимонад", "Продукты", BenBoth, KindExpense, 0)}}
-	svc := NewService(&fakeDict{}, llm, openGate{}, denyBudget{}, quietLog())
+	llm := &countingLLM{items: []RawItem{raw("99999", "лимонад", "Продукты", KindExpense, 0)}}
+	svc := NewService(llm, openGate{}, denyBudget{}, quietLog())
 
-	res, err := svc.Classify(context.Background(), 1, "600 лимонад")
+	res, err := svc.Classify(context.Background(), emptyScope(), "600 лимонад")
 	if err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
@@ -180,10 +186,10 @@ func TestBreakerLearnsFromServiceCalls(t *testing.T) {
 	// Три сообщения подряд с ошибкой сервиса — и бот перестаёт ходить в сеть.
 	b, _ := newTestBreaker()
 	llm := &failingLLM{}
-	svc := NewService(&fakeDict{}, llm, b, denyBudget{}, quietLog())
+	svc := NewService(llm, b, denyBudget{}, quietLog())
 
 	for i := 0; i < 4; i++ {
-		if _, err := svc.Classify(context.Background(), 1, "600 лимонад"); err != nil {
+		if _, err := svc.Classify(context.Background(), emptyScope(), "600 лимонад"); err != nil {
 			t.Fatalf("неожиданная ошибка: %v", err)
 		}
 	}
@@ -210,8 +216,8 @@ func assertDegraded(t *testing.T, res *Result, amount string) {
 	if it.CategoryID != nil {
 		t.Errorf("категория = %v, у деградированной записи её быть не должно", *it.CategoryID)
 	}
-	if it.Beneficiary != BenPayer || it.Kind != KindExpense {
-		t.Errorf("beneficiary/kind = %s/%s, ожидались payer/expense", it.Beneficiary, it.Kind)
+	if it.Kind != KindExpense {
+		t.Errorf("kind = %s, ожидался expense", it.Kind)
 	}
 	if it.DaysAgo != 0 {
 		t.Errorf("days_ago = %d, ожидался 0", it.DaysAgo)
@@ -254,15 +260,15 @@ func TestBudgetCheckedBeforeBreakerProbe(t *testing.T) {
 	}
 	c.add(31 * time.Minute)
 
-	llm := &countingLLM{items: []RawItem{raw("600", "лимонад", "Продукты", BenBoth, KindExpense, 0)}}
-	svc := NewService(&fakeDict{}, llm, b, exhaustedBudget{}, quietLog())
-	if _, err := svc.Classify(context.Background(), 1, "600 лимонад"); err != nil {
+	llm := &countingLLM{items: []RawItem{raw("600", "лимонад", "Продукты", KindExpense, 0)}}
+	svc := NewService(llm, b, exhaustedBudget{}, quietLog())
+	if _, err := svc.Classify(context.Background(), emptyScope(), "600 лимонад"); err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
 
 	// Новый месяц: бюджет отпустил — проба должна быть на месте.
-	svc = NewService(&fakeDict{}, llm, b, denyBudget{}, quietLog())
-	res, err := svc.Classify(context.Background(), 1, "600 лимонад")
+	svc = NewService(llm, b, denyBudget{}, quietLog())
+	res, err := svc.Classify(context.Background(), emptyScope(), "600 лимонад")
 	if err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
@@ -278,9 +284,9 @@ func TestZeroAmountIsNotAnExpense(t *testing.T) {
 	// В базе стоит check (amount > 0): деградировать ноль нельзя, иначе
 	// вставка упадёт и запись потеряется.
 	llm := &failingLLM{}
-	svc := NewService(&fakeDict{}, llm, openGate{}, denyBudget{}, quietLog())
+	svc := NewService(llm, openGate{}, denyBudget{}, quietLog())
 
-	if _, err := svc.Classify(context.Background(), 1, "0 тест"); err != ErrNoAmount {
+	if _, err := svc.Classify(context.Background(), emptyScope(), "0 тест"); err != ErrNoAmount {
 		t.Errorf("ошибка = %v, ожидалась ErrNoAmount", err)
 	}
 }

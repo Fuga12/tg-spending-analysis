@@ -17,10 +17,32 @@ import (
 	"budget/migrations"
 )
 
-// Store — доступ к БД. Голый SQL через pgx, никаких ORM.
+// Store — административный доступ к БД. Голый SQL через pgx, никаких ORM.
+//
+// Здесь живёт только то, что группе не принадлежит: люди, сами группы,
+// очередь воркера, общий расход токенов. Всё остальное — через ForGroup.
 type Store struct {
 	pool *pgxpool.Pool
 }
+
+// GroupStore — то же хранилище, но привязанное к одной группе.
+//
+// Данные группы читаются и пишутся только отсюда, и group_id подставляется
+// в каждый запрос сам. Это главная защита от худшего бага мультитенантности:
+// запрос без фильтра по группе нельзя написать по невнимательности — для
+// этого надо намеренно взять административный Store.
+type GroupStore struct {
+	pool    *pgxpool.Pool
+	groupID int64
+}
+
+// ForGroup сужает хранилище до одной группы.
+func (s *Store) ForGroup(groupID int64) *GroupStore {
+	return &GroupStore{pool: s.pool, groupID: groupID}
+}
+
+// GroupID — чью группу обслуживает этот хендл.
+func (g *GroupStore) GroupID() int64 { return g.groupID }
 
 // Connect поднимает пул и сразу проверяет связь с базой.
 func Connect(ctx context.Context, dsn string) (*Store, error) {
@@ -94,3 +116,6 @@ func (gooseLogger) Fatalf(format string, v ...any) {
 // Pool отдаёт пул напрямую. Нужен только тестам: подготовить и вычистить
 // данные, для которых у хранилища нет и не должно быть метода.
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
+
+// Pool отдаёт пул напрямую — по той же причине, что и у Store.
+func (g *GroupStore) Pool() *pgxpool.Pool { return g.pool }

@@ -18,13 +18,6 @@ import (
 	"budget/internal/tokens"
 )
 
-// Бенефициар — на кого потрачено относительно плательщика (§3).
-const (
-	BenPayer   = "payer"
-	BenPartner = "partner"
-	BenBoth    = "both"
-)
-
 // Тип операции.
 const (
 	KindExpense  = "expense"
@@ -32,15 +25,29 @@ const (
 	KindTransfer = "transfer"
 )
 
-// CategoryOther — куда падает всё, что не разобрали (§8).
-const CategoryOther = "Прочее"
+// FallbackCategory — куда падает всё, что не разобрали (§8).
+//
+// Ищется по ключу шаблона, а не по имени: группа вправе переименовать
+// «Прочее» во что угодно, и поиск по имени после этого возвращал бы nil,
+// оставляя запись в очереди воркера навсегда. Nil означает, что категорию
+// с этим ключом группа удалила — тогда трата останется без категории.
+func FallbackCategory(cats []storage.Category) *storage.Category {
+	for i := range cats {
+		if cats[i].TemplateKey == storage.TemplateOther {
+			return &cats[i]
+		}
+	}
+	return nil
+}
 
 // Item — одна разобранная трата, готовая к записи в transactions.
+//
+// Получателя здесь нет: с переходом на группы модель его пока не определяет,
+// и каждая трата пишется на плательщика. Промпт под имена участников — фаза 2.
 type Item struct {
 	Amount      decimal.Decimal
 	Description string
 	CategoryID  *int32 // nil — без категории
-	Beneficiary string
 	Kind        string
 	DaysAgo     int
 
@@ -85,16 +92,32 @@ type Result struct {
 // ErrNoAmount — в сообщении нет ни одного числа, сохранять нечего (§8).
 var ErrNoAmount = errors.New("в сообщении нет суммы")
 
-// Dict — то, что классификатору нужно от хранилища.
+// Dict — то, что классификатору нужно от хранилища группы.
 type Dict interface {
 	Categories(ctx context.Context) ([]storage.Category, error)
 	LookupWords(ctx context.Context, userID int64, words []string) (map[string]storage.WordHit, error)
 }
 
+// Scope — чьё сообщение разбираем.
+//
+// Хранилище приезжает снаружи, а не лежит в Service: категории, личные
+// привязки и счётчик токенов принадлежат группе, а Service один на процесс.
+// Так подсунуть сюда данные чужой группы можно только намеренно.
+type Scope struct {
+	UserID int64
+	Dict   Dict
+	// Usage — куда писать расход токенов этой группы. В боевом коде это тот
+	// же *storage.GroupStore, что и Dict.
+	Usage UsageRecorder
+}
+
 // LLM — обращение к модели. Возвращает разобранные моделью элементы как есть,
 // без валидации: проверять их — дело validate.go.
+//
+// Счётчик токенов передаётся вызовом, а не лежит в клиенте: клиент один на
+// процесс, а расход считается по группам.
 type LLM interface {
-	Parse(ctx context.Context, text string, cats []storage.Category) ([]RawItem, error)
+	Parse(ctx context.Context, usage UsageRecorder, text string, cats []storage.Category) ([]RawItem, error)
 }
 
 // Breakable — предохранители, стоящие перед сетевым вызовом (§7).
@@ -110,7 +133,6 @@ type Budgetable interface {
 
 // Service связывает кэш, предохранители, модель и валидацию.
 type Service struct {
-	dict    Dict
 	llm     LLM
 	breaker Breakable
 	budget  Budgetable
@@ -121,8 +143,8 @@ type Service struct {
 	degraded  atomic.Int64
 }
 
-func NewService(dict Dict, llm LLM, breaker Breakable, budget Budgetable, log *slog.Logger) *Service {
-	return &Service{dict: dict, llm: llm, breaker: breaker, budget: budget, log: log}
+func NewService(llm LLM, breaker Breakable, budget Budgetable, log *slog.Logger) *Service {
+	return &Service{llm: llm, breaker: breaker, budget: budget, log: log}
 }
 
 // Classify разбирает сообщение пользователя.
@@ -130,7 +152,7 @@ func NewService(dict Dict, llm LLM, breaker Breakable, budget Budgetable, log *s
 // Единственная ошибка, которую метод возвращает, — ErrNoAmount: сохранять
 // тогда нечего. Во всех остальных случаях результат есть, пусть и
 // деградированный. Потеря записи из-за недоступности API недопустима (§8).
-func (s *Service) Classify(ctx context.Context, userID int64, text string) (*Result, error) {
+func (s *Service) Classify(ctx context.Context, sc Scope, text string) (*Result, error) {
 	// Ноль и минус тратой быть не могут — в базе стоит check (amount > 0),
 	// и деградированный путь такую запись всё равно не сохранил бы.
 	amounts := positive(tokens.Extract(text))
@@ -138,18 +160,18 @@ func (s *Service) Classify(ctx context.Context, userID int64, text string) (*Res
 		return nil, ErrNoAmount
 	}
 
-	cats, err := s.dict.Categories(ctx)
+	cats, err := sc.Dict.Categories(ctx)
 	if err != nil {
 		// Без категорий нельзя ни в кэш, ни в модель — остаётся деградация.
 		s.log.Error("не смог прочитать категории", "err", err)
 		return s.degrade(text, amounts, ReasonNoCategory), nil
 	}
 
-	if res, ok, err := s.resolveFromCache(ctx, userID, text, amounts, cats); err != nil {
+	if res, ok, err := s.resolveFromCache(ctx, sc, text, amounts, cats); err != nil {
 		s.log.Warn("кэш-резолвер сломался, иду в модель", "err", err)
 	} else if ok {
 		s.cacheHits.Add(1)
-		s.log.Info("разбор без сети", "fast_path", true, "user_id", userID)
+		s.log.Info("разбор без сети", "fast_path", true, "user_id", sc.UserID)
 		return res, nil
 	}
 
@@ -162,21 +184,21 @@ func (s *Service) Classify(ctx context.Context, userID int64, text string) (*Res
 		return s.degrade(text, amounts, ReasonNoNetwork), nil
 	}
 
-	raw, err := s.llm.Parse(ctx, text, cats)
+	raw, err := s.llm.Parse(ctx, sc.Usage, text, cats)
 	s.breaker.Record(err)
 	if err != nil {
-		s.log.Warn("модель не разобрала сообщение", "fast_path", false, "user_id", userID,
+		s.log.Warn("модель не разобрала сообщение", "fast_path", false, "user_id", sc.UserID,
 			"kind", ErrKind(err), "err", err)
 		return s.degrade(text, amounts, ReasonNoAnswer), nil
 	}
 
-	items := Validate(raw, text, cats, userID, s.log)
+	items := Validate(raw, text, cats, s.log)
 	if len(items) == 0 {
-		s.log.Warn("после валидации не осталось элементов", "fast_path", false, "user_id", userID)
+		s.log.Warn("после валидации не осталось элементов", "fast_path", false, "user_id", sc.UserID)
 		return s.degrade(text, amounts, ReasonUnusable), nil
 	}
 	s.llmCalls.Add(1)
-	s.log.Info("разбор моделью", "fast_path", false, "user_id", userID, "items", len(items))
+	s.log.Info("разбор моделью", "fast_path", false, "user_id", sc.UserID, "items", len(items))
 	return &Result{Items: items, Source: SourceLLM}, nil
 }
 
@@ -197,7 +219,6 @@ func (s *Service) degrade(text string, amounts []decimal.Decimal, reason string)
 			Amount:              amounts[0],
 			Description:         description,
 			CategoryID:          nil,
-			Beneficiary:         BenPayer,
 			Kind:                KindExpense,
 			DaysAgo:             0,
 			NeedsClassification: true,

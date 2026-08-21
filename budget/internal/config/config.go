@@ -271,12 +271,3 @@ func loadDotEnv(path string) {
 		}
 	}
 }
-
-// envBool — «1», «true», «yes» означают да, всё остальное нет.
-func envBool(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
-	case "1", "true", "yes", "да":
-		return true
-	}
-	return false
-}

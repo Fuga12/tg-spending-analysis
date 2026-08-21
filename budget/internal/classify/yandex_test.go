@@ -41,7 +41,7 @@ func (f *fakeUsage) all() []recordedUsage {
 }
 
 const okResponse = `{
-  "choices":[{"message":{"content":"{\"items\":[{\"amount\":1200,\"description\":\"пятёрочка\",\"category\":\"Продукты\",\"beneficiary\":\"both\",\"kind\":\"expense\",\"days_ago\":1}]}"}}],
+  "choices":[{"message":{"content":"{\"items\":[{\"amount\":1200,\"description\":\"пятёрочка\",\"category\":\"Продукты\",\"kind\":\"expense\",\"days_ago\":1}]}"}}],
   "usage":{"prompt_tokens":650,"completion_tokens":48}
 }`
 
@@ -57,7 +57,7 @@ func newTestYandex(t *testing.T, h http.HandlerFunc) (*Yandex, *fakeUsage, *http
 		FolderID: "test-folder",
 		Model:    "yandexgpt/rc",
 		Timeout:  2 * time.Second,
-	}, usage, quietLog())
+	}, quietLog())
 	return y, usage, srv
 }
 
@@ -91,13 +91,13 @@ func TestYandexRequestShape(t *testing.T) {
 	}
 	var headers http.Header
 
-	y, _, _ := newTestYandex(t, func(w http.ResponseWriter, r *http.Request) {
+	y, usage, _ := newTestYandex(t, func(w http.ResponseWriter, r *http.Request) {
 		headers = r.Header.Clone()
 		_ = json.NewDecoder(r.Body).Decode(&got)
 		_, _ = w.Write([]byte(okResponse))
 	})
 
-	if _, err := y.Parse(context.Background(), "вчера пятёрочка 1200", testCategories()); err != nil {
+	if _, err := y.Parse(context.Background(), usage, "вчера пятёрочка 1200", testCategories()); err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
 
@@ -133,8 +133,9 @@ func TestYandexRequestShape(t *testing.T) {
 	if got.ResponseFormat.Type != "json_schema" {
 		t.Errorf("response_format.type = %q", got.ResponseFormat.Type)
 	}
-	if n := len(got.ResponseFormat.JSONSchema.Schema.Properties.Items.Items.Required); n != 7 {
-		t.Errorf("обязательных полей в схеме %d, ожидалось 7", n)
+	// Получателя в схеме больше нет: модель его не определяет (фаза 2).
+	if n := len(got.ResponseFormat.JSONSchema.Schema.Properties.Items.Items.Required); n != 5 {
+		t.Errorf("обязательных полей в схеме %d, ожидалось 5", n)
 	}
 }
 
@@ -145,14 +146,14 @@ func TestSystemPromptListsCategoriesWithHints(t *testing.T) {
 	var got struct {
 		Messages []struct{ Role, Content string }
 	}
-	y, _, _ := newTestYandex(t, func(w http.ResponseWriter, r *http.Request) {
+	y, usage, _ := newTestYandex(t, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&got)
 		_, _ = w.Write([]byte(okResponse))
 	})
 
 	cats := append(testCategories(),
-		storage.Category{ID: 9, Name: "Алкоголь", Hint: "пиво, вино и тп", DefaultBeneficiary: BenBoth})
-	if _, err := y.Parse(context.Background(), "пиво 4000", cats); err != nil {
+		storage.Category{ID: 9, Name: "Алкоголь", Hint: "пиво, вино и тп"})
+	if _, err := y.Parse(context.Background(), usage, "пиво 4000", cats); err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
 
@@ -170,7 +171,7 @@ func TestYandexParsesItemsAndRecordsUsage(t *testing.T) {
 		_, _ = w.Write([]byte(okResponse))
 	})
 
-	items, err := y.Parse(context.Background(), "вчера пятёрочка 1200", testCategories())
+	items, err := y.Parse(context.Background(), usage, "вчера пятёрочка 1200", testCategories())
 	if err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
@@ -197,7 +198,7 @@ func TestYandexRetriesOnce5xx(t *testing.T) {
 		w.WriteHeader(http.StatusBadGateway)
 	})
 
-	_, err := y.Parse(context.Background(), "600 лимонад", testCategories())
+	_, err := y.Parse(context.Background(), usage, "600 лимонад", testCategories())
 	if err == nil {
 		t.Fatal("ожидалась ошибка")
 	}
@@ -220,7 +221,7 @@ func TestYandexDoesNotRetryQuota(t *testing.T) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
 
-	_, err := y.Parse(context.Background(), "600 лимонад", testCategories())
+	_, err := y.Parse(context.Background(), usage, "600 лимонад", testCategories())
 	if ErrKind(err) != storage.ErrKindQuota {
 		t.Errorf("вид ошибки = %q, ожидался quota", ErrKind(err))
 	}
@@ -233,12 +234,12 @@ func TestYandexDoesNotRetryQuota(t *testing.T) {
 }
 
 func TestYandexQuotaDetectedByBody(t *testing.T) {
-	y, _, _ := newTestYandex(t, func(w http.ResponseWriter, _ *http.Request) {
+	y, usage, _ := newTestYandex(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"error":"quota exceeded for folder"}`))
 	})
 
-	_, err := y.Parse(context.Background(), "600 лимонад", testCategories())
+	_, err := y.Parse(context.Background(), usage, "600 лимонад", testCategories())
 	if ErrKind(err) != storage.ErrKindQuota {
 		t.Errorf("вид ошибки = %q, упоминание квоты в теле — тоже quota (§7)", ErrKind(err))
 	}
@@ -251,7 +252,7 @@ func TestYandexBrokenContentIsSchemaError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"конечно! вот ваши траты"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
 	})
 
-	_, err := y.Parse(context.Background(), "600 лимонад", testCategories())
+	_, err := y.Parse(context.Background(), usage, "600 лимонад", testCategories())
 	if ErrKind(err) != storage.ErrKindSchema {
 		t.Errorf("вид ошибки = %q, ожидался schema", ErrKind(err))
 	}
@@ -274,7 +275,7 @@ func TestYandexEmptyChoicesIsSchemaError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":0}}`))
 	})
 
-	_, err := y.Parse(context.Background(), "600 лимонад", testCategories())
+	_, err := y.Parse(context.Background(), usage, "600 лимонад", testCategories())
 	if ErrKind(err) != storage.ErrKindSchema {
 		t.Errorf("вид ошибки = %q, ожидался schema", ErrKind(err))
 	}
@@ -287,13 +288,13 @@ func TestYandex5xxWithLimitInBodyStaysHTTP(t *testing.T) {
 	// «rate limit» в теле пятисотки — это поломка сервиса, а не исчерпанная
 	// квота: иначе ретрая не будет, а breaker откроется на полчаса (§7).
 	var calls int
-	y, _, _ := newTestYandex(t, func(w http.ResponseWriter, _ *http.Request) {
+	y, usage, _ := newTestYandex(t, func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"error":"rate limit, try later"}`))
 	})
 
-	_, err := y.Parse(context.Background(), "600 лимонад", testCategories())
+	_, err := y.Parse(context.Background(), usage, "600 лимонад", testCategories())
 	if ErrKind(err) != storage.ErrKindHTTP {
 		t.Errorf("вид ошибки = %q, ожидался http", ErrKind(err))
 	}
@@ -316,7 +317,7 @@ func TestYandexCancelIsNotServiceError(t *testing.T) {
 		cancel()
 	}()
 
-	_, err := y.Parse(ctx, "600 лимонад", testCategories())
+	_, err := y.Parse(ctx, usage, "600 лимонад", testCategories())
 	if err == nil {
 		t.Fatal("ожидалась ошибка")
 	}
@@ -334,7 +335,7 @@ func TestYandexTimeout(t *testing.T) {
 	})
 	y.timeout = 50 * time.Millisecond
 
-	_, err := y.Parse(context.Background(), "600 лимонад", testCategories())
+	_, err := y.Parse(context.Background(), usage, "600 лимонад", testCategories())
 	if ErrKind(err) != storage.ErrKindTimeout {
 		t.Errorf("вид ошибки = %q, ожидался timeout", ErrKind(err))
 	}
@@ -347,13 +348,13 @@ func TestYandexBadKeyCountsTowardsBreaker(t *testing.T) {
 	// Неверный ключ: повторять бессмысленно, но копиться в breaker обязано,
 	// иначе бот долбится в сеть на каждое сообщение (§13, проверка фазы 3).
 	var calls int
-	y, _, _ := newTestYandex(t, func(w http.ResponseWriter, _ *http.Request) {
+	y, usage, _ := newTestYandex(t, func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":{"code":401,"message":"The token is invalid"}}`))
 	})
 
-	_, err := y.Parse(context.Background(), "600 лимонад", testCategories())
+	_, err := y.Parse(context.Background(), usage, "600 лимонад", testCategories())
 	if ErrKind(err) != storage.ErrKindHTTP {
 		t.Errorf("вид ошибки = %q, ожидался http", ErrKind(err))
 	}
