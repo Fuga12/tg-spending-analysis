@@ -515,3 +515,68 @@ func TestHasRecordedOnLooksAtPerson(t *testing.T) {
 		t.Errorf("молчавший сегодня = %v (%v), ожидалось false", has, err)
 	}
 }
+
+func TestPendingClassificationGoesRoundByGroup(t *testing.T) {
+	// Группа, где сегодня записали много трат при лежащем API, не должна
+	// забивать батч целиком: в маленькой группе человек иначе ждал бы свою
+	// категорию часами.
+	s := testStore(t)
+	ctx := context.Background()
+	busy, busyMembers := testGroup(t, s, 1)
+
+	if err := s.EnsureUser(ctx, 99, "Тихий"); err != nil {
+		t.Fatalf("пользователь: %v", err)
+	}
+	quietGroup, quietMember, err := s.CreateGroup(ctx, "Тихая", 99)
+	if err != nil {
+		t.Fatalf("вторая группа: %v", err)
+	}
+	quiet := s.ForGroup(quietGroup.ID)
+
+	pending := func(g *GroupStore, member Member, n int) {
+		t.Helper()
+		for i := 0; i < n; i++ {
+			if _, err := g.InsertTransaction(ctx, Transaction{
+				PayerMemberID: member.ID, Kind: KindExpense,
+				Amount: decimal.RequireFromString("100"), Description: "тест",
+				RawText: "тест 100", NeedsClassification: true, SpentAt: time.Now(),
+			}); err != nil {
+				t.Fatalf("вставка: %v", err)
+			}
+		}
+	}
+
+	// Шумная группа записала десять трат раньше, тихая — одну после.
+	pending(busy, busyMembers[0], 10)
+	pending(quiet, quietMember, 1)
+
+	batch, err := s.PendingClassification(ctx, 3)
+	if err != nil {
+		t.Fatalf("очередь: %v", err)
+	}
+	if len(batch) != 3 {
+		t.Fatalf("в батче %d записей, ожидались три", len(batch))
+	}
+
+	var fromQuiet int
+	for _, tx := range batch {
+		if tx.GroupID == quietGroup.ID {
+			fromQuiet++
+		}
+	}
+	if fromQuiet != 1 {
+		t.Errorf("записей тихой группы в батче %d, ожидалась одна — обход идёт по кругу", fromQuiet)
+	}
+	// Первой всё равно берётся самая старая: очередь разгребается от старого
+	// к новому, просто не за счёт остальных.
+	if batch[0].GroupID != busy.GroupID() {
+		t.Errorf("первой взята группа %d, ожидалась самая старая запись шумной (%d)",
+			batch[0].GroupID, busy.GroupID())
+	}
+
+	// Плательщик приезжает с именем: промпту нужно понять «себе».
+	if batch[0].PayerName == "" || batch[0].PayerUserID == 0 {
+		t.Errorf("плательщик = %q (%d), очередь обязана отдавать имя и telegram id",
+			batch[0].PayerName, batch[0].PayerUserID)
+	}
+}

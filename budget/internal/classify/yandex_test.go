@@ -80,6 +80,11 @@ func TestYandexRequestShape(t *testing.T) {
 									Category struct {
 										Enum []string `json:"enum"`
 									} `json:"category"`
+									Recipients struct {
+										Items struct {
+											Enum []string `json:"enum"`
+										} `json:"items"`
+									} `json:"recipients"`
 								} `json:"properties"`
 								Required []string `json:"required"`
 							} `json:"items"`
@@ -97,7 +102,7 @@ func TestYandexRequestShape(t *testing.T) {
 		_, _ = w.Write([]byte(okResponse))
 	})
 
-	if _, err := y.Parse(context.Background(), usage, "вчера пятёрочка 1200", testCategories()); err != nil {
+	if _, err := y.Parse(context.Background(), usage, testRequest("вчера пятёрочка 1200", testCategories())); err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
 
@@ -133,9 +138,58 @@ func TestYandexRequestShape(t *testing.T) {
 	if got.ResponseFormat.Type != "json_schema" {
 		t.Errorf("response_format.type = %q", got.ResponseFormat.Type)
 	}
-	// Получателя в схеме больше нет: модель его не определяет (фаза 2).
-	if n := len(got.ResponseFormat.JSONSchema.Schema.Properties.Items.Items.Required); n != 5 {
-		t.Errorf("обязательных полей в схеме %d, ожидалось 5", n)
+	if n := len(got.ResponseFormat.JSONSchema.Schema.Properties.Items.Items.Required); n != 7 {
+		t.Errorf("обязательных полей в схеме %d, ожидалось 7", n)
+	}
+
+	// Получателя можно назвать только участником этой группы: enum собирается
+	// из её состава, иначе модель выдумает имя, а валидация его выбросит.
+	who := got.ResponseFormat.JSONSchema.Schema.Properties.Items.Items.Properties.Recipients.Items.Enum
+	want := []string{"Илья", "Аня", Everyone}
+	if len(who) != len(want) {
+		t.Fatalf("enum получателей = %v, ожидался %v", who, want)
+	}
+	for i := range want {
+		if who[i] != want[i] {
+			t.Errorf("enum получателей = %v, ожидался %v", who, want)
+			break
+		}
+	}
+}
+
+func TestSystemPromptNamesAuthorAndMembers(t *testing.T) {
+	// Без имени автора не разобрать «себе», без списка — «Ане». Оба списка
+	// собираются из состояния группы, а не из константы.
+	req := testRequest("600 лимонад", testCategories())
+	prompt := SystemPrompt(req)
+
+	if !strings.Contains(prompt, "Сообщение пишет: Илья") {
+		t.Errorf("в промпте нет автора сообщения:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Участники группы: Илья, Аня") {
+		t.Errorf("в промпте нет состава группы:\n%s", prompt)
+	}
+	// Пример «трата на другого» обязан звать настоящим именем: выдуманное
+	// модель начнёт возвращать как настоящее.
+	if !strings.Contains(prompt, `"recipients":["Аня"]`) {
+		t.Errorf("в примерах нет получателя-участника:\n%s", prompt)
+	}
+}
+
+func TestSystemPromptSkipsOthersInSoloGroup(t *testing.T) {
+	// Человек в группе один — примеров про других быть не должно.
+	solo := []storage.Member{{ID: 11, GroupID: 1, UserID: 101, Name: "Илья"}}
+	req := Request{
+		Text: "600 лимонад", Cats: testCategories(),
+		Roster: NewRoster(solo), Payer: solo[0],
+	}
+	prompt := SystemPrompt(req)
+
+	if strings.Contains(prompt, "Аня") {
+		t.Errorf("в группе из одного человека примеров про других быть не должно:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, `"recipients":["Илья"]`) {
+		t.Errorf("пример «себе» должен остаться:\n%s", prompt)
 	}
 }
 
@@ -153,7 +207,7 @@ func TestSystemPromptListsCategoriesWithHints(t *testing.T) {
 
 	cats := append(testCategories(),
 		storage.Category{ID: 9, Name: "Алкоголь", Hint: "пиво, вино и тп"})
-	if _, err := y.Parse(context.Background(), usage, "пиво 4000", cats); err != nil {
+	if _, err := y.Parse(context.Background(), usage, testRequest("пиво 4000", cats)); err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
 
@@ -171,7 +225,7 @@ func TestYandexParsesItemsAndRecordsUsage(t *testing.T) {
 		_, _ = w.Write([]byte(okResponse))
 	})
 
-	items, err := y.Parse(context.Background(), usage, "вчера пятёрочка 1200", testCategories())
+	items, err := y.Parse(context.Background(), usage, testRequest("вчера пятёрочка 1200", testCategories()))
 	if err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
@@ -198,7 +252,7 @@ func TestYandexRetriesOnce5xx(t *testing.T) {
 		w.WriteHeader(http.StatusBadGateway)
 	})
 
-	_, err := y.Parse(context.Background(), usage, "600 лимонад", testCategories())
+	_, err := y.Parse(context.Background(), usage, testRequest("600 лимонад", testCategories()))
 	if err == nil {
 		t.Fatal("ожидалась ошибка")
 	}
@@ -221,7 +275,7 @@ func TestYandexDoesNotRetryQuota(t *testing.T) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
 
-	_, err := y.Parse(context.Background(), usage, "600 лимонад", testCategories())
+	_, err := y.Parse(context.Background(), usage, testRequest("600 лимонад", testCategories()))
 	if ErrKind(err) != storage.ErrKindQuota {
 		t.Errorf("вид ошибки = %q, ожидался quota", ErrKind(err))
 	}
@@ -239,7 +293,7 @@ func TestYandexQuotaDetectedByBody(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":"quota exceeded for folder"}`))
 	})
 
-	_, err := y.Parse(context.Background(), usage, "600 лимонад", testCategories())
+	_, err := y.Parse(context.Background(), usage, testRequest("600 лимонад", testCategories()))
 	if ErrKind(err) != storage.ErrKindQuota {
 		t.Errorf("вид ошибки = %q, упоминание квоты в теле — тоже quota (§7)", ErrKind(err))
 	}
@@ -252,7 +306,7 @@ func TestYandexBrokenContentIsSchemaError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"конечно! вот ваши траты"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
 	})
 
-	_, err := y.Parse(context.Background(), usage, "600 лимонад", testCategories())
+	_, err := y.Parse(context.Background(), usage, testRequest("600 лимонад", testCategories()))
 	if ErrKind(err) != storage.ErrKindSchema {
 		t.Errorf("вид ошибки = %q, ожидался schema", ErrKind(err))
 	}
@@ -275,7 +329,7 @@ func TestYandexEmptyChoicesIsSchemaError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":0}}`))
 	})
 
-	_, err := y.Parse(context.Background(), usage, "600 лимонад", testCategories())
+	_, err := y.Parse(context.Background(), usage, testRequest("600 лимонад", testCategories()))
 	if ErrKind(err) != storage.ErrKindSchema {
 		t.Errorf("вид ошибки = %q, ожидался schema", ErrKind(err))
 	}
@@ -294,7 +348,7 @@ func TestYandex5xxWithLimitInBodyStaysHTTP(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":"rate limit, try later"}`))
 	})
 
-	_, err := y.Parse(context.Background(), usage, "600 лимонад", testCategories())
+	_, err := y.Parse(context.Background(), usage, testRequest("600 лимонад", testCategories()))
 	if ErrKind(err) != storage.ErrKindHTTP {
 		t.Errorf("вид ошибки = %q, ожидался http", ErrKind(err))
 	}
@@ -317,7 +371,7 @@ func TestYandexCancelIsNotServiceError(t *testing.T) {
 		cancel()
 	}()
 
-	_, err := y.Parse(ctx, usage, "600 лимонад", testCategories())
+	_, err := y.Parse(ctx, usage, testRequest("600 лимонад", testCategories()))
 	if err == nil {
 		t.Fatal("ожидалась ошибка")
 	}
@@ -335,7 +389,7 @@ func TestYandexTimeout(t *testing.T) {
 	})
 	y.timeout = 50 * time.Millisecond
 
-	_, err := y.Parse(context.Background(), usage, "600 лимонад", testCategories())
+	_, err := y.Parse(context.Background(), usage, testRequest("600 лимонад", testCategories()))
 	if ErrKind(err) != storage.ErrKindTimeout {
 		t.Errorf("вид ошибки = %q, ожидался timeout", ErrKind(err))
 	}
@@ -354,7 +408,7 @@ func TestYandexBadKeyCountsTowardsBreaker(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":{"code":401,"message":"The token is invalid"}}`))
 	})
 
-	_, err := y.Parse(context.Background(), usage, "600 лимонад", testCategories())
+	_, err := y.Parse(context.Background(), usage, testRequest("600 лимонад", testCategories()))
 	if ErrKind(err) != storage.ErrKindHTTP {
 		t.Errorf("вид ошибки = %q, ожидался http", ErrKind(err))
 	}

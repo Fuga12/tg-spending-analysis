@@ -1,0 +1,388 @@
+[
+  {
+    "text": "600 лимонад",
+    "note": "простейшая трата: про получателя не сказано — уходит плательщику",
+    "model": [{"amount": 600, "description": "лимонад", "category": "Продукты", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "600", "description": "лимонад", "category": "Продукты", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "такси 450",
+    "note": "сумма после слова",
+    "model": [{"amount": 450, "description": "такси", "category": "Такси", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "450", "description": "такси", "category": "Такси", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "1 200 продукты",
+    "note": "пробел как разделитель тысяч — одна сумма, а не две",
+    "model": [{"amount": 1200, "description": "продукты", "category": "Продукты", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "1200", "description": "продукты", "category": "Продукты", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "кофе 500р",
+    "note": "валютный хвост не мешает ни сумме, ни описанию",
+    "model": [{"amount": 500, "description": "кофе", "category": "Кафе и рестораны", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "500", "description": "кофе", "category": "Кафе и рестораны", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "обед 350 руб.",
+    "note": "«руб.» с точкой",
+    "model": [{"amount": 350, "description": "обед", "category": "Кафе и рестораны", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "350", "description": "обед", "category": "Кафе и рестораны", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "заправка 3к",
+    "note": "«к» — тысячи",
+    "model": [{"amount": 3000, "description": "заправка", "category": "Транспорт", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "3000", "description": "заправка", "category": "Транспорт", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "аренда 45 тыс",
+    "note": "«тыс» словом",
+    "model": [{"amount": 45000, "description": "аренда", "category": "Жильё", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "45000", "description": "аренда", "category": "Жильё", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "молоко 89,90",
+    "note": "копейки через запятую",
+    "model": [{"amount": 89.90, "description": "молоко", "category": "Продукты", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "89.9", "description": "молоко", "category": "Продукты", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+
+  {
+    "text": "такси 450 себе",
+    "note": "«себе» — это автор сообщения",
+    "model": [{"amount": 450, "description": "такси", "category": "Такси", "recipients": ["Илья"], "recipients_stated": true, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "450", "description": "такси", "category": "Такси", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "купил Ане цветы 2500",
+    "note": "получатель назван по имени",
+    "model": [{"amount": 2500, "description": "цветы", "category": "Подарки", "recipients": ["Аня"], "recipients_stated": true, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "2500", "description": "цветы", "category": "Подарки", "recipients": ["Аня"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "уле кроссовки 7000",
+    "note": "имя в нижнем регистре — модель отвечает так же, участник обязан найтись",
+    "model": [{"amount": 7000, "description": "кроссовки", "category": "Одежда", "recipients": ["уля"], "recipients_stated": true, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "7000", "description": "кроссовки", "category": "Одежда", "recipients": ["Уля"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "продукты на всех 3200",
+    "note": "общая трата — пустой список получателей, корзина «Общее» в отчёте",
+    "model": [{"amount": 3200, "description": "продукты", "category": "Продукты", "recipients": ["на всех"], "recipients_stated": true, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "3200", "description": "продукты", "category": "Продукты", "recipients": [], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "нам пиццу 1400",
+    "note": "«нам» — тоже общая",
+    "model": [{"amount": 1400, "description": "пицца", "category": "Доставка еды", "recipients": ["на всех"], "recipients_stated": true, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "1400", "description": "пицца", "category": "Доставка еды", "recipients": [], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "билеты в кино Ане и Уле 1600",
+    "note": "двое получателей — в отчёте сумма делится между ними",
+    "model": [{"amount": 1600, "description": "кино", "category": "Хобби и развлечения", "recipients": ["Аня", "Уля"], "recipients_stated": true, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "1600", "description": "кино", "category": "Хобби и развлечения", "recipients": ["Аня", "Уля"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "лекарства Ане 640",
+    "note": "получатель не плательщик",
+    "model": [{"amount": 640, "description": "лекарства", "category": "Здоровье", "recipients": ["Аня"], "recipients_stated": true, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "640", "description": "лекарства", "category": "Здоровье", "recipients": ["Аня"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "подарок Диме 3000",
+    "note": "названного нет в группе — верить нельзя, остаётся умолчание",
+    "model": [{"amount": 3000, "description": "подарок", "category": "Подарки", "recipients": ["Дима"], "recipients_stated": true, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "3000", "description": "подарок", "category": "Подарки", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "торт Ане и соседке 1800",
+    "note": "часть получателей чужие — оставляем только своих",
+    "model": [{"amount": 1800, "description": "торт", "category": "Продукты", "recipients": ["Аня", "Соседка"], "recipients_stated": true, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "1800", "description": "торт", "category": "Продукты", "recipients": ["Аня"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "ужин на всех и Ане десерт 2000",
+    "note": "«на всех» вместе с именем — трата общая целиком, а не в части",
+    "model": [{"amount": 2000, "description": "ужин", "category": "Кафе и рестораны", "recipients": ["Аня", "на всех"], "recipients_stated": true, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "2000", "description": "ужин", "category": "Кафе и рестораны", "recipients": [], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "шампунь 300",
+    "note": "модель назвала Аню дважды — получатель один",
+    "model": [{"amount": 300, "description": "шампунь", "category": "Дом и быт", "recipients": ["Аня", "Аня"], "recipients_stated": true, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "300", "description": "шампунь", "category": "Дом и быт", "recipients": ["Аня"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "стрижка 1500",
+    "note": "модель угадала получателя, но не сказано прямо — умолчание важнее догадки",
+    "model": [{"amount": 1500, "description": "стрижка", "category": "Прочее", "recipients": ["Аня"], "recipients_stated": false, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "1500", "description": "стрижка", "category": "Прочее", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+
+  {
+    "text": "вчера пятёрочка 1200",
+    "note": "вчерашняя дата",
+    "model": [{"amount": 1200, "description": "пятёрочка", "category": "Продукты", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 1}],
+    "want": [{"amount": "1200", "description": "пятёрочка", "category": "Продукты", "recipients": ["Илья"], "kind": "expense", "days_ago": 1}]
+  },
+  {
+    "text": "позавчера аптека 780",
+    "note": "позавчерашняя дата",
+    "model": [{"amount": 780, "description": "аптека", "category": "Здоровье", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 2}],
+    "want": [{"amount": "780", "description": "аптека", "category": "Здоровье", "recipients": ["Илья"], "kind": "expense", "days_ago": 2}]
+  },
+  {
+    "text": "неделю назад чинил кран 4500",
+    "note": "дальняя дата в разумных пределах",
+    "model": [{"amount": 4500, "description": "сантехник", "category": "Жильё", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 7}],
+    "want": [{"amount": "4500", "description": "сантехник", "category": "Жильё", "recipients": ["Илья"], "kind": "expense", "days_ago": 7}]
+  },
+  {
+    "text": "давно брал 900",
+    "note": "модель ушла за горизонт — обрезаем до 30 дней",
+    "model": [{"amount": 900, "description": "покупка", "category": "Прочее", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 999}],
+    "want": [{"amount": "900", "description": "покупка", "category": "Прочее", "recipients": ["Илья"], "kind": "expense", "days_ago": 30}]
+  },
+  {
+    "text": "сегодня 250 кофе",
+    "note": "отрицательный days_ago от модели — это сегодня",
+    "model": [{"amount": 250, "description": "кофе", "category": "Кафе и рестораны", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": -3}],
+    "want": [{"amount": "250", "description": "кофе", "category": "Кафе и рестораны", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+
+  {
+    "text": "вчера взял в пятёрочке на 1200 и такси 400",
+    "note": "две траты в одном сообщении, обе вчерашние",
+    "model": [
+      {"amount": 1200, "description": "пятёрочка", "category": "Продукты", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 1},
+      {"amount": 400, "description": "такси", "category": "Такси", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 1}
+    ],
+    "want": [
+      {"amount": "1200", "description": "пятёрочка", "category": "Продукты", "recipients": ["Илья"], "kind": "expense", "days_ago": 1},
+      {"amount": "400", "description": "такси", "category": "Такси", "recipients": ["Илья"], "kind": "expense", "days_ago": 1}
+    ]
+  },
+  {
+    "text": "жкх 4300 и интернет 700",
+    "note": "две траты в разные категории",
+    "model": [
+      {"amount": 4300, "description": "жкх", "category": "Коммуналка", "recipients": ["на всех"], "recipients_stated": true, "kind": "expense", "days_ago": 0},
+      {"amount": 700, "description": "интернет", "category": "Связь и интернет", "recipients": ["на всех"], "recipients_stated": true, "kind": "expense", "days_ago": 0}
+    ],
+    "want": [
+      {"amount": "4300", "description": "жкх", "category": "Коммуналка", "recipients": [], "kind": "expense", "days_ago": 0},
+      {"amount": "700", "description": "интернет", "category": "Связь и интернет", "recipients": [], "kind": "expense", "days_ago": 0}
+    ]
+  },
+  {
+    "text": "магнит 850, аптека 320, такси 300",
+    "note": "три траты через запятую",
+    "model": [
+      {"amount": 850, "description": "магнит", "category": "Продукты", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0},
+      {"amount": 320, "description": "аптека", "category": "Здоровье", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0},
+      {"amount": 300, "description": "такси", "category": "Такси", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}
+    ],
+    "want": [
+      {"amount": "850", "description": "магнит", "category": "Продукты", "recipients": ["Илья"], "kind": "expense", "days_ago": 0},
+      {"amount": "320", "description": "аптека", "category": "Здоровье", "recipients": ["Илья"], "kind": "expense", "days_ago": 0},
+      {"amount": "300", "description": "такси", "category": "Такси", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}
+    ]
+  },
+  {
+    "text": "Ане платье 5000 и себе рубашка 2000",
+    "note": "две траты с разными получателями",
+    "model": [
+      {"amount": 5000, "description": "платье", "category": "Одежда", "recipients": ["Аня"], "recipients_stated": true, "kind": "expense", "days_ago": 0},
+      {"amount": 2000, "description": "рубашка", "category": "Одежда", "recipients": ["Илья"], "recipients_stated": true, "kind": "expense", "days_ago": 0}
+    ],
+    "want": [
+      {"amount": "5000", "description": "платье", "category": "Одежда", "recipients": ["Аня"], "kind": "expense", "days_ago": 0},
+      {"amount": "2000", "description": "рубашка", "category": "Одежда", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}
+    ]
+  },
+  {
+    "text": "1200 и ещё 1200",
+    "note": "одинаковые суммы — это две траты, а не одна",
+    "model": [
+      {"amount": 1200, "description": "покупка", "category": "Прочее", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0},
+      {"amount": 1200, "description": "ещё покупка", "category": "Прочее", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}
+    ],
+    "want": [
+      {"amount": "1200", "description": "покупка", "category": "Прочее", "recipients": ["Илья"], "kind": "expense", "days_ago": 0},
+      {"amount": "1200", "description": "ещё покупка", "category": "Прочее", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}
+    ]
+  },
+
+  {
+    "text": "скинул Ане 5к",
+    "note": "перевод: ни категории, ни получателя — это не трата",
+    "model": [{"amount": 5000, "description": "перевод", "category": "Прочее", "recipients": ["Аня"], "recipients_stated": true, "kind": "transfer", "days_ago": 0}],
+    "want": [{"amount": "5000", "description": "перевод", "category": "", "recipients": [], "kind": "transfer", "days_ago": 0}]
+  },
+  {
+    "text": "перевёл 10000",
+    "note": "перевод без адресата",
+    "model": [{"amount": 10000, "description": "перевод", "category": "Прочее", "recipients": [], "recipients_stated": false, "kind": "transfer", "days_ago": 0}],
+    "want": [{"amount": "10000", "description": "перевод", "category": "", "recipients": [], "kind": "transfer", "days_ago": 0}]
+  },
+  {
+    "text": "зарплата 90000",
+    "note": "доход: категория остаётся, получателя нет",
+    "model": [{"amount": 90000, "description": "зарплата", "category": "Прочее", "recipients": [], "recipients_stated": false, "kind": "income", "days_ago": 0}],
+    "want": [{"amount": "90000", "description": "зарплата", "category": "Прочее", "recipients": [], "kind": "income", "days_ago": 0}]
+  },
+  {
+    "text": "вернули за билеты 3400",
+    "note": "возврат — тоже поступление",
+    "model": [{"amount": 3400, "description": "возврат", "category": "Прочее", "recipients": [], "recipients_stated": false, "kind": "income", "days_ago": 0}],
+    "want": [{"amount": "3400", "description": "возврат", "category": "Прочее", "recipients": [], "kind": "income", "days_ago": 0}]
+  },
+
+  {
+    "text": "1 200 продукты",
+    "note": "модель «пересчитала» 1 200 в 12000 — сумме не из текста верить нельзя",
+    "model": [{"amount": 12000, "description": "продукты", "category": "Продукты", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}],
+    "source": "degraded",
+    "want": [{"amount": "1200", "description": "продукты", "category": "", "recipients": ["Илья"], "kind": "expense", "days_ago": 0, "pending": true}]
+  },
+  {
+    "text": "600 лимонад",
+    "note": "неизвестная категория падает в «Прочее»",
+    "model": [{"amount": 600, "description": "лимонад", "category": "Криптовалюта", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "600", "description": "лимонад", "category": "Прочее", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "600 лимонад",
+    "note": "мусор в kind — безопасное умолчание expense",
+    "model": [{"amount": 600, "description": "лимонад", "category": "Продукты", "recipients": [], "recipients_stated": false, "kind": "покупка", "days_ago": 0}],
+    "want": [{"amount": "600", "description": "лимонад", "category": "Продукты", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "600 лимонад",
+    "note": "пустое описание достраивается из текста без суммы",
+    "model": [{"amount": 600, "description": "", "category": "Продукты", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "600", "description": "лимонад", "category": "Продукты", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "пиво на 4000",
+    "note": "предлог по краям в описание не попадает",
+    "model": [{"amount": 4000, "description": "", "category": "Продукты", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "4000", "description": "пиво", "category": "Продукты", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "600 лимонад",
+    "note": "нулевую сумму сохранять нельзя: в базе стоит check (amount > 0)",
+    "model": [
+      {"amount": 0, "description": "ничего", "category": "Продукты", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0},
+      {"amount": 600, "description": "лимонад", "category": "Продукты", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}
+    ],
+    "want": [{"amount": "600", "description": "лимонад", "category": "Продукты", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "1200 покупка",
+    "note": "пустой ответ модели — деградированная запись, а не потеря",
+    "model": [],
+    "source": "degraded",
+    "want": [{"amount": "1200", "description": "покупка", "category": "", "recipients": ["Илья"], "kind": "expense", "days_ago": 0, "pending": true}]
+  },
+
+  {
+    "text": "встреча в 19:30",
+    "note": "время не сумма: сохранять нечего",
+    "error": "no_amount"
+  },
+  {
+    "text": "кофе",
+    "note": "нет суммы вовсе",
+    "error": "no_amount"
+  },
+  {
+    "text": "0 тест",
+    "note": "ноль тратой быть не может",
+    "error": "no_amount"
+  },
+  {
+    "text": "теле2 пополнил 300",
+    "note": "цифра внутри слова — не сумма",
+    "model": [{"amount": 300, "description": "теле2", "category": "Связь и интернет", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "300", "description": "теле2", "category": "Связь и интернет", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+
+  {
+    "text": "пятёрочка 1200",
+    "note": "слово из общей затравки — ответ без сети",
+    "dict": {"пятёрочка": {"category": "Продукты", "source": "seed"}},
+    "want": [{"amount": "1200", "description": "пятёрочка", "category": "Продукты", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}],
+    "source": "cache"
+  },
+  {
+    "text": "самокат 250",
+    "note": "ручная привязка перебивает затравку",
+    "dict": {"самокат": {"category": "Такси", "source": "manual", "hits": 1}},
+    "want": [{"amount": "250", "description": "самокат", "category": "Такси", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}],
+    "source": "cache"
+  },
+  {
+    "text": "косметика 1900",
+    "note": "словарь помнит и получателя, а не только категорию",
+    "dict": {"косметика": {"category": "Дом и быт", "source": "manual", "member": "Аня"}},
+    "want": [{"amount": "1900", "description": "косметика", "category": "Дом и быт", "recipients": ["Аня"], "kind": "expense", "days_ago": 0}],
+    "source": "cache"
+  },
+  {
+    "text": "кофе 500р",
+    "note": "быстрый путь не спотыкается о валютный хвост",
+    "dict": {"кофе": {"category": "Кафе и рестораны", "source": "seed"}},
+    "want": [{"amount": "500", "description": "кофе", "category": "Кафе и рестораны", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}],
+    "source": "cache"
+  },
+  {
+    "text": "вечерний самокат 250",
+    "note": "при разногласии побеждает ручная привязка, а не слово с большим hits",
+    "dict": {
+      "самокат": {"category": "Такси", "source": "manual", "hits": 1},
+      "вечерний": {"category": "Продукты", "source": "llm", "hits": 99}
+    },
+    "want": [{"amount": "250", "description": "вечерний самокат", "category": "Такси", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}],
+    "source": "cache"
+  },
+  {
+    "text": "вчера пятёрочка 1200",
+    "note": "слово-триггер даты уводит в модель, даже если слова в словаре есть",
+    "dict": {"пятёрочка": {"category": "Продукты", "source": "seed"}},
+    "model": [{"amount": 1200, "description": "пятёрочка", "category": "Продукты", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 1}],
+    "want": [{"amount": "1200", "description": "пятёрочка", "category": "Продукты", "recipients": ["Илья"], "kind": "expense", "days_ago": 1}]
+  },
+  {
+    "text": "пятёрочка 1200 и такси 400",
+    "note": "две суммы уводят в модель, даже когда оба слова известны",
+    "dict": {
+      "пятёрочка": {"category": "Продукты", "source": "seed"},
+      "такси": {"category": "Такси", "source": "seed"}
+    },
+    "model": [
+      {"amount": 1200, "description": "пятёрочка", "category": "Продукты", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0},
+      {"amount": 400, "description": "такси", "category": "Такси", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}
+    ],
+    "want": [
+      {"amount": "1200", "description": "пятёрочка", "category": "Продукты", "recipients": ["Илья"], "kind": "expense", "days_ago": 0},
+      {"amount": "400", "description": "такси", "category": "Такси", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}
+    ]
+  },
+  {
+    "text": "лимонад 600",
+    "note": "незнакомое слово идёт в модель",
+    "dict": {"пятёрочка": {"category": "Продукты", "source": "seed"}},
+    "model": [{"amount": 600, "description": "лимонад", "category": "Продукты", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "600", "description": "лимонад", "category": "Продукты", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  },
+  {
+    "text": "утренний кофе 250",
+    "note": "хотя бы одно неизвестное слово — быстрый путь не берётся",
+    "dict": {"кофе": {"category": "Кафе и рестораны", "source": "seed"}},
+    "model": [{"amount": 250, "description": "кофе", "category": "Кафе и рестораны", "recipients": [], "recipients_stated": false, "kind": "expense", "days_ago": 0}],
+    "want": [{"amount": "250", "description": "кофе", "category": "Кафе и рестораны", "recipients": ["Илья"], "kind": "expense", "days_ago": 0}]
+  }
+]

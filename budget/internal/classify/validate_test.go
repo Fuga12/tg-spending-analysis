@@ -17,6 +17,20 @@ func testCategories() []storage.Category {
 	}
 }
 
+// testMembers — группа из двоих для тестов, где состав не главное.
+func testMembers() []storage.Member {
+	return []storage.Member{
+		{ID: 11, GroupID: 1, UserID: 101, Name: "Илья"},
+		{ID: 12, GroupID: 1, UserID: 102, Name: "Аня"},
+	}
+}
+
+// testRequest — разбор от имени первого участника.
+func testRequest(text string, cats []storage.Category) Request {
+	members := testMembers()
+	return Request{Text: text, Cats: cats, Roster: NewRoster(members), Payer: members[0]}
+}
+
 func quietLog() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
@@ -33,9 +47,7 @@ func raw(amount, description, category, kind string, daysAgo int) RawItem {
 
 func TestValidateAmountMustComeFromText(t *testing.T) {
 	// Модель «пересчитала» 1 200 в 12000 — такому элементу верить нельзя.
-	items := Validate(
-		[]RawItem{raw("12000", "продукты", "Продукты", KindExpense, 0)},
-		"1 200 продукты", testCategories(), quietLog())
+	items := Validate([]RawItem{raw("12000", "продукты", "Продукты", KindExpense, 0)}, testRequest("1 200 продукты", testCategories()), quietLog())
 
 	if len(items) != 0 {
 		t.Fatalf("элемент с чужой суммой должен быть отброшен, получено %d", len(items))
@@ -43,9 +55,7 @@ func TestValidateAmountMustComeFromText(t *testing.T) {
 }
 
 func TestValidateKeepsAmountFromText(t *testing.T) {
-	items := Validate(
-		[]RawItem{raw("1200", "продукты", "Продукты", KindExpense, 0)},
-		"1 200 продукты", testCategories(), quietLog())
+	items := Validate([]RawItem{raw("1200", "продукты", "Продукты", KindExpense, 0)}, testRequest("1 200 продукты", testCategories()), quietLog())
 
 	if len(items) != 1 {
 		t.Fatalf("ожидался один элемент, получено %d", len(items))
@@ -59,9 +69,7 @@ func TestValidateKeepsAmountFromText(t *testing.T) {
 }
 
 func TestValidateUnknownCategoryFallsBackToOther(t *testing.T) {
-	items := Validate(
-		[]RawItem{raw("600", "лимонад", "Криптовалюта", KindExpense, 0)},
-		"600 лимонад", testCategories(), quietLog())
+	items := Validate([]RawItem{raw("600", "лимонад", "Криптовалюта", KindExpense, 0)}, testRequest("600 лимонад", testCategories()), quietLog())
 
 	if len(items) != 1 {
 		t.Fatalf("ожидался один элемент, получено %d", len(items))
@@ -72,9 +80,7 @@ func TestValidateUnknownCategoryFallsBackToOther(t *testing.T) {
 }
 
 func TestValidateTransferDropsCategory(t *testing.T) {
-	items := Validate(
-		[]RawItem{raw("5000", "перевод", "Прочее", KindTransfer, 0)},
-		"скинул 5к", testCategories(), quietLog())
+	items := Validate([]RawItem{raw("5000", "перевод", "Прочее", KindTransfer, 0)}, testRequest("скинул 5к", testCategories()), quietLog())
 
 	if len(items) != 1 {
 		t.Fatalf("ожидался один элемент, получено %d", len(items))
@@ -88,12 +94,10 @@ func TestValidateTransferDropsCategory(t *testing.T) {
 }
 
 func TestValidateClampsDaysAgo(t *testing.T) {
-	items := Validate(
-		[]RawItem{
-			raw("600", "лимонад", "Продукты", KindExpense, 999),
-			raw("600", "лимонад", "Продукты", KindExpense, -5),
-		},
-		"600 лимонад", testCategories(), quietLog())
+	items := Validate([]RawItem{
+		raw("600", "лимонад", "Продукты", KindExpense, 999),
+		raw("600", "лимонад", "Продукты", KindExpense, -5),
+	}, testRequest("600 лимонад", testCategories()), quietLog())
 
 	if len(items) != 2 {
 		t.Fatalf("ожидались два элемента, получено %d", len(items))
@@ -109,9 +113,7 @@ func TestValidateClampsDaysAgo(t *testing.T) {
 func TestValidateBadKindFallsBackToExpense(t *testing.T) {
 	// Схема гарантирует форму, но не смысл: значение вне перечисления
 	// заменяется безопасным умолчанием.
-	items := Validate(
-		[]RawItem{raw("600", "лимонад", "Продукты", "покупка", 0)},
-		"600 лимонад", testCategories(), quietLog())
+	items := Validate([]RawItem{raw("600", "лимонад", "Продукты", "покупка", 0)}, testRequest("600 лимонад", testCategories()), quietLog())
 
 	if len(items) != 1 {
 		t.Fatalf("ожидался один элемент, получено %d", len(items))
@@ -128,9 +130,7 @@ func TestFallbackCategoryFoundByTemplateKeyNotName(t *testing.T) {
 		{ID: 1, Name: "Продукты", TemplateKey: "groceries"},
 		{ID: 3, Name: "Разное и всякое", TemplateKey: storage.TemplateOther},
 	}
-	items := Validate(
-		[]RawItem{raw("600", "лимонад", "Криптовалюта", KindExpense, 0)},
-		"600 лимонад", renamed, quietLog())
+	items := Validate([]RawItem{raw("600", "лимонад", "Криптовалюта", KindExpense, 0)}, testRequest("600 лимонад", renamed), quietLog())
 
 	if len(items) != 1 || items[0].CategoryID == nil || *items[0].CategoryID != 3 {
 		t.Errorf("категория = %+v, ожидалась переименованная свалка (3)", items)
@@ -138,18 +138,14 @@ func TestFallbackCategoryFoundByTemplateKeyNotName(t *testing.T) {
 
 	// А если свалку удалили — трата остаётся без категории, но не пропадает.
 	noOther := []storage.Category{{ID: 1, Name: "Продукты", TemplateKey: "groceries"}}
-	items = Validate(
-		[]RawItem{raw("600", "лимонад", "Криптовалюта", KindExpense, 0)},
-		"600 лимонад", noOther, quietLog())
+	items = Validate([]RawItem{raw("600", "лимонад", "Криптовалюта", KindExpense, 0)}, testRequest("600 лимонад", noOther), quietLog())
 	if len(items) != 1 || items[0].CategoryID != nil {
 		t.Errorf("без свалки = %+v, ожидался элемент без категории", items)
 	}
 }
 
 func TestValidateEmptyDescriptionTakenFromText(t *testing.T) {
-	items := Validate(
-		[]RawItem{raw("600", "", "Продукты", KindExpense, 0)},
-		"600 лимонад", testCategories(), quietLog())
+	items := Validate([]RawItem{raw("600", "", "Продукты", KindExpense, 0)}, testRequest("600 лимонад", testCategories()), quietLog())
 
 	if len(items) != 1 {
 		t.Fatalf("ожидался один элемент, получено %d", len(items))
@@ -160,9 +156,7 @@ func TestValidateEmptyDescriptionTakenFromText(t *testing.T) {
 }
 
 func TestValidateDropsNonPositiveAmount(t *testing.T) {
-	items := Validate(
-		[]RawItem{raw("0", "тест", "Продукты", KindExpense, 0)},
-		"0 тест", testCategories(), quietLog())
+	items := Validate([]RawItem{raw("0", "тест", "Продукты", KindExpense, 0)}, testRequest("0 тест", testCategories()), quietLog())
 
 	if len(items) != 0 {
 		t.Fatalf("нулевая сумма должна быть отброшена, получено %d", len(items))
@@ -172,7 +166,7 @@ func TestValidateDropsNonPositiveAmount(t *testing.T) {
 func TestValidateEmptyItemsStayEmpty(t *testing.T) {
 	// Пустой ответ модели при непустых токенах — сигнал для деградированного
 	// пути (§8), Validate ничего не досочиняет.
-	items := Validate(nil, "600 лимонад", testCategories(), quietLog())
+	items := Validate(nil, testRequest("600 лимонад", testCategories()), quietLog())
 	if len(items) != 0 {
 		t.Fatalf("ожидался пустой результат, получено %d", len(items))
 	}
@@ -180,9 +174,7 @@ func TestValidateEmptyItemsStayEmpty(t *testing.T) {
 
 func TestValidateLongDescriptionTrimmed(t *testing.T) {
 	long := "оченьдлинноеописаниетратыкотороемодельзачемтопридумалаиононевлезаетвполе"
-	items := Validate(
-		[]RawItem{raw("600", long, "Продукты", KindExpense, 0)},
-		"600 лимонад", testCategories(), quietLog())
+	items := Validate([]RawItem{raw("600", long, "Продукты", KindExpense, 0)}, testRequest("600 лимонад", testCategories()), quietLog())
 
 	if len(items) != 1 {
 		t.Fatalf("ожидался один элемент, получено %d", len(items))

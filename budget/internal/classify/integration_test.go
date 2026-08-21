@@ -60,7 +60,7 @@ func TestSecondTimeResolvesFromCache(t *testing.T) {
 		raw("600", "лимонадница", "Продукты", KindExpense, 0),
 	}}
 	svc := NewService(llm, openGate{}, denyBudget{}, quietLog())
-	sc := Scope{UserID: member.UserID, Dict: group, Usage: group}
+	sc := Scope{Payer: member, Dict: group, Usage: group}
 
 	first, err := svc.Classify(ctx, sc, "600 лимонадница")
 	if err != nil {

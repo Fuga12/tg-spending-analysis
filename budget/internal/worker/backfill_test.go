@@ -53,7 +53,7 @@ type stubLLM struct {
 	err   error
 }
 
-func (s *stubLLM) Parse(context.Context, classify.UsageRecorder, string, []storage.Category) ([]classify.RawItem, error) {
+func (s *stubLLM) Parse(context.Context, classify.UsageRecorder, classify.Request) ([]classify.RawItem, error) {
 	s.calls++
 	return s.items, s.err
 }

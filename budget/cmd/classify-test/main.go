@@ -85,7 +85,7 @@ func main() {
 	start := time.Now()
 	group := store.ForGroup(member.GroupID)
 	res, err := svc.Classify(ctx, classify.Scope{
-		UserID: member.UserID, Dict: group, Usage: group,
+		Payer: member, Dict: group, Usage: group,
 	}, text)
 	elapsed := time.Since(start)
 	after, usageErr := store.MonthlyUsage(ctx)
@@ -123,9 +123,12 @@ type printable struct {
 	Amount      string `json:"amount"`
 	Description string `json:"description"`
 	CategoryID  *int32 `json:"category_id"`
-	Kind        string `json:"kind"`
-	DaysAgo     int    `json:"days_ago"`
-	Words       []string
+	// Recipients — member_id получателей. Пустой список означает «на всю
+	// группу», и это не то же самое, что «модель не поняла».
+	Recipients []int64  `json:"recipients"`
+	Kind       string   `json:"kind"`
+	DaysAgo    int      `json:"days_ago"`
+	Words      []string `json:"words"`
 }
 
 func toPrintable(items []classify.Item) []printable {
@@ -135,6 +138,7 @@ func toPrintable(items []classify.Item) []printable {
 			Amount:      i.Amount.String(),
 			Description: i.Description,
 			CategoryID:  i.CategoryID,
+			Recipients:  i.Recipients,
 			Kind:        i.Kind,
 			DaysAgo:     i.DaysAgo,
 			Words:       i.Words,

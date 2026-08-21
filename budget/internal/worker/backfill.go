@@ -80,8 +80,16 @@ func (w *Backfill) process(ctx context.Context, tx storage.Transaction) {
 	// Запись принадлежит группе — и словарь, и категории берутся у неё.
 	g := w.store.ForGroup(tx.GroupID)
 
+	// Плательщик собирается из очереди: промпту нужно его имя, чтобы понять
+	// «себе», а словарь у него личный.
+	payer := storage.Member{
+		ID:      tx.PayerMemberID,
+		GroupID: tx.GroupID,
+		UserID:  tx.PayerUserID,
+		Name:    tx.PayerName,
+	}
 	res, err := w.classifier.Classify(ctx, classify.Scope{
-		UserID: tx.PayerUserID, Dict: g, Usage: g,
+		Payer: payer, Dict: g, Usage: g,
 	}, tx.RawText)
 	if err != nil {
 		w.log.Warn("добор не удался", "err", err, "tx", tx.ID)
@@ -138,7 +146,7 @@ func (w *Backfill) saveMissing(ctx context.Context, g *storage.GroupStore,
 		}
 		id, err := g.InsertTransaction(ctx, storage.Transaction{
 			PayerMemberID: tx.PayerMemberID,
-			Recipients:    recipientsOf(tx.PayerMemberID, item.Kind),
+			Recipients:    item.Recipients,
 			Kind:          item.Kind,
 			Amount:        item.Amount,
 			Description:   item.Description,
@@ -156,25 +164,16 @@ func (w *Backfill) saveMissing(ctx context.Context, g *storage.GroupStore,
 	}
 }
 
-// recipientsOf — на кого записать трату. Пока всегда на плательщика: модель
-// получателя не определяет, а «на всю группу» — это утверждение, которого
-// никто не делал (фаза 2). У перевода и дохода получателя нет вовсе.
-func recipientsOf(payerMemberID int64, kind string) []int64 {
-	if kind != classify.KindExpense {
-		return nil
-	}
-	return []int64{payerMemberID}
-}
-
 // remember кладёт слова в личный словарь. Только расходы: быстрый путь всегда
 // собирает expense, и запомненный доход во второй раз стал бы тратой.
 func (w *Backfill) remember(ctx context.Context, g *storage.GroupStore, userID int64, item classify.Item) {
 	if item.CategoryID == nil || item.Kind != classify.KindExpense {
 		return
 	}
+	member := classify.RememberedRecipient(item)
 	for _, word := range item.Words {
 		if err := g.UpsertWord(ctx, userID, word, *item.CategoryID,
-			nil, storage.SourceLLM); err != nil {
+			member, storage.SourceLLM); err != nil {
 			w.log.Warn("не запомнил слово", "err", err, "word", word)
 		}
 	}

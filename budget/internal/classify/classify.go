@@ -41,15 +41,17 @@ func FallbackCategory(cats []storage.Category) *storage.Category {
 }
 
 // Item — одна разобранная трата, готовая к записи в transactions.
-//
-// Получателя здесь нет: с переходом на группы модель его пока не определяет,
-// и каждая трата пишется на плательщика. Промпт под имена участников — фаза 2.
 type Item struct {
 	Amount      decimal.Decimal
 	Description string
 	CategoryID  *int32 // nil — без категории
 	Kind        string
 	DaysAgo     int
+
+	// Recipients — на кого потрачено, member_id. Пустой список означает «на
+	// всю группу» и появляется, только если так сказано в сообщении: молчание
+	// про получателя разрешается умолчанием категории, а не общей корзиной.
+	Recipients []int64
 
 	// Words — значимые слова описания, их запоминает кэш после успешного
 	// разбора (§8). Для деградированного результата пусто.
@@ -78,6 +80,7 @@ const (
 	ReasonNoAnswer   = "модель не ответила"
 	ReasonUnusable   = "после валидации не осталось элементов"
 	ReasonNoCategory = "категории недоступны"
+	ReasonNoMembers  = "состав группы недоступен"
 )
 
 // Result — итог разбора одного сообщения.
@@ -95,20 +98,35 @@ var ErrNoAmount = errors.New("в сообщении нет суммы")
 // Dict — то, что классификатору нужно от хранилища группы.
 type Dict interface {
 	Categories(ctx context.Context) ([]storage.Category, error)
+	Members(ctx context.Context) ([]storage.Member, error)
 	LookupWords(ctx context.Context, userID int64, words []string) (map[string]storage.WordHit, error)
 }
 
 // Scope — чьё сообщение разбираем.
 //
-// Хранилище приезжает снаружи, а не лежит в Service: категории, личные
-// привязки и счётчик токенов принадлежат группе, а Service один на процесс.
-// Так подсунуть сюда данные чужой группы можно только намеренно.
+// Хранилище приезжает снаружи, а не лежит в Service: категории, участники,
+// личные привязки и счётчик токенов принадлежат группе, а Service один на
+// процесс. Так подсунуть сюда данные чужой группы можно только намеренно.
 type Scope struct {
-	UserID int64
-	Dict   Dict
+	// Payer — кто пишет. Его словарь читает быстрый путь, его именем модель
+	// понимает «себе», на него уходят траты без названного получателя.
+	Payer storage.Member
+	Dict  Dict
 	// Usage — куда писать расход токенов этой группы. В боевом коде это тот
 	// же *storage.GroupStore, что и Dict.
 	Usage UsageRecorder
+}
+
+// Request — всё, что модели нужно знать о группе, чтобы разобрать сообщение.
+//
+// Состав группы едет вместе с текстом: получателя нельзя назвать иначе как по
+// имени, а имена у каждой группы свои. Отсюда же и Payer — без него модель не
+// понимает «себе».
+type Request struct {
+	Text   string
+	Cats   []storage.Category
+	Roster *Roster
+	Payer  storage.Member
 }
 
 // LLM — обращение к модели. Возвращает разобранные моделью элементы как есть,
@@ -117,7 +135,7 @@ type Scope struct {
 // Счётчик токенов передаётся вызовом, а не лежит в клиенте: клиент один на
 // процесс, а расход считается по группам.
 type LLM interface {
-	Parse(ctx context.Context, usage UsageRecorder, text string, cats []storage.Category) ([]RawItem, error)
+	Parse(ctx context.Context, usage UsageRecorder, req Request) ([]RawItem, error)
 }
 
 // Breakable — предохранители, стоящие перед сетевым вызовом (§7).
@@ -164,47 +182,54 @@ func (s *Service) Classify(ctx context.Context, sc Scope, text string) (*Result,
 	if err != nil {
 		// Без категорий нельзя ни в кэш, ни в модель — остаётся деградация.
 		s.log.Error("не смог прочитать категории", "err", err)
-		return s.degrade(text, amounts, ReasonNoCategory), nil
+		return s.degrade(sc, text, amounts, ReasonNoCategory), nil
 	}
+	members, err := sc.Dict.Members(ctx)
+	if err != nil {
+		// Без состава группы получателя не назвать даже по имени.
+		s.log.Error("не смог прочитать участников", "err", err)
+		return s.degrade(sc, text, amounts, ReasonNoMembers), nil
+	}
+	req := Request{Text: text, Cats: cats, Roster: NewRoster(members), Payer: sc.Payer}
 
-	if res, ok, err := s.resolveFromCache(ctx, sc, text, amounts, cats); err != nil {
+	if res, ok, err := s.resolveFromCache(ctx, sc, amounts, req); err != nil {
 		s.log.Warn("кэш-резолвер сломался, иду в модель", "err", err)
 	} else if ok {
 		s.cacheHits.Add(1)
-		s.log.Info("разбор без сети", "fast_path", true, "user_id", sc.UserID)
+		s.log.Info("разбор без сети", "fast_path", true, "user_id", sc.Payer.UserID)
 		return res, nil
 	}
 
 	// Бюджет проверяется первым: Breaker.Allow расходует пробную попытку,
 	// и тратить её на вызов, которого всё равно не будет, нельзя.
 	if !s.budget.Allow(ctx) {
-		return s.degrade(text, amounts, ReasonNoNetwork), nil
+		return s.degrade(sc, text, amounts, ReasonNoNetwork), nil
 	}
 	if !s.breaker.Allow() {
-		return s.degrade(text, amounts, ReasonNoNetwork), nil
+		return s.degrade(sc, text, amounts, ReasonNoNetwork), nil
 	}
 
-	raw, err := s.llm.Parse(ctx, sc.Usage, text, cats)
+	raw, err := s.llm.Parse(ctx, sc.Usage, req)
 	s.breaker.Record(err)
 	if err != nil {
-		s.log.Warn("модель не разобрала сообщение", "fast_path", false, "user_id", sc.UserID,
+		s.log.Warn("модель не разобрала сообщение", "fast_path", false, "user_id", sc.Payer.UserID,
 			"kind", ErrKind(err), "err", err)
-		return s.degrade(text, amounts, ReasonNoAnswer), nil
+		return s.degrade(sc, text, amounts, ReasonNoAnswer), nil
 	}
 
-	items := Validate(raw, text, cats, s.log)
+	items := Validate(raw, req, s.log)
 	if len(items) == 0 {
-		s.log.Warn("после валидации не осталось элементов", "fast_path", false, "user_id", sc.UserID)
-		return s.degrade(text, amounts, ReasonUnusable), nil
+		s.log.Warn("после валидации не осталось элементов", "fast_path", false, "user_id", sc.Payer.UserID)
+		return s.degrade(sc, text, amounts, ReasonUnusable), nil
 	}
 	s.llmCalls.Add(1)
-	s.log.Info("разбор моделью", "fast_path", false, "user_id", sc.UserID, "items", len(items))
+	s.log.Info("разбор моделью", "fast_path", false, "user_id", sc.Payer.UserID, "items", len(items))
 	return &Result{Items: items, Source: SourceLLM}, nil
 }
 
 // degrade собирает запись, которую можно сохранить без модели: сумма — первая
 // из найденных, описание — текст без суммы, категорию поставит воркер (§8).
-func (s *Service) degrade(text string, amounts []decimal.Decimal, reason string) *Result {
+func (s *Service) degrade(sc Scope, text string, amounts []decimal.Decimal, reason string) *Result {
 	description := Describe(text)
 	if description == "" {
 		description = trimTo(strings.TrimSpace(text), 64)
@@ -216,11 +241,15 @@ func (s *Service) degrade(text string, amounts []decimal.Decimal, reason string)
 		Source: SourceDegraded,
 		Reason: reason,
 		Items: []Item{{
-			Amount:              amounts[0],
-			Description:         description,
-			CategoryID:          nil,
-			Kind:                KindExpense,
-			DaysAgo:             0,
+			Amount:      amounts[0],
+			Description: description,
+			CategoryID:  nil,
+			Kind:        KindExpense,
+			DaysAgo:     0,
+			// Получатель — плательщик: это самое безобидное предположение.
+			// Записать трату на всю группу значит утверждать то, чего никто
+			// не говорил, а воркер добора потом поправит.
+			Recipients:          []int64{sc.Payer.ID},
 			NeedsClassification: true,
 		}},
 	}

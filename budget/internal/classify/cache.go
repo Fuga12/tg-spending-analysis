@@ -34,10 +34,11 @@ var stopWords = map[string]bool{
 func (s *Service) resolveFromCache(
 	ctx context.Context,
 	sc Scope,
-	text string,
 	amounts []decimal.Decimal,
-	cats []storage.Category,
+	req Request,
 ) (*Result, bool, error) {
+	text := req.Text
+
 	// Условие 1: ровно одна сумма.
 	if len(amounts) != 1 {
 		return nil, false, nil
@@ -56,7 +57,7 @@ func (s *Service) resolveFromCache(
 		return nil, false, nil
 	}
 
-	hits, err := sc.Dict.LookupWords(ctx, sc.UserID, words)
+	hits, err := sc.Dict.LookupWords(ctx, sc.Payer.UserID, words)
 	if err != nil {
 		return nil, false, err
 	}
@@ -71,9 +72,18 @@ func (s *Service) resolveFromCache(
 	if !ok {
 		return nil, false, nil
 	}
-	cat := categoryByID(cats, best.CategoryID)
+	cat := categoryByID(req.Cats, best.CategoryID)
 	if cat == nil {
 		return nil, false, nil
+	}
+
+	// Получателя словарь помнит, только если он был ровно один: «косметика —
+	// Уле» запоминается, «продукты на всех» — нет, для этого в word_map нет
+	// колонки. Пустой member_id означает «взять умолчание категории», и это
+	// то же правило, по которому работает разбор моделью.
+	recipients := defaultRecipients(req, cat)
+	if best.MemberID != nil && req.Roster.Has(*best.MemberID) {
+		recipients = []int64{*best.MemberID}
 	}
 
 	id := cat.ID
@@ -85,6 +95,7 @@ func (s *Service) resolveFromCache(
 			CategoryID:  &id,
 			Kind:        KindExpense,
 			DaysAgo:     0,
+			Recipients:  recipients,
 			// В кэш возвращаются только слова, которые и так указывали на
 			// категорию-победителя. Иначе «утренний самокат» перепривязал бы
 			// слово «утренний» к категории самоката — новых знаний здесь нет.

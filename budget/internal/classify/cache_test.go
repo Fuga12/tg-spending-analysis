@@ -20,6 +20,10 @@ func (f *fakeDict) Categories(context.Context) ([]storage.Category, error) {
 	return testCategories(), nil
 }
 
+func (f *fakeDict) Members(context.Context) ([]storage.Member, error) {
+	return testMembers(), nil
+}
+
 func (f *fakeDict) LookupWords(_ context.Context, _ int64, words []string) (map[string]storage.WordHit, error) {
 	out := map[string]storage.WordHit{}
 	for _, w := range words {
@@ -37,7 +41,7 @@ type countingLLM struct {
 	items []RawItem
 }
 
-func (c *countingLLM) Parse(context.Context, UsageRecorder, string, []storage.Category) ([]RawItem, error) {
+func (c *countingLLM) Parse(context.Context, UsageRecorder, Request) ([]RawItem, error) {
 	c.calls++
 	return c.items, nil
 }
@@ -63,7 +67,7 @@ func (alwaysAllowBudget) Allow(context.Context) bool { return true }
 // принадлежит группе, а Service один на процесс.
 func newService(words map[string]storage.WordHit, llm *countingLLM) (*Service, Scope) {
 	svc := NewService(llm, openGate{}, alwaysAllowBudget{}, quietLog())
-	return svc, Scope{UserID: 1, Dict: &fakeDict{words: words}, Usage: noUsage{}}
+	return svc, Scope{Payer: testMembers()[0], Dict: &fakeDict{words: words}, Usage: noUsage{}}
 }
 
 func TestCacheHitSkipsAPI(t *testing.T) {

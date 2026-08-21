@@ -117,7 +117,7 @@ func (exhaustedBudget) Allow(context.Context) bool { return false }
 // emptyScope — группа с пустым словарём: здесь проверяются предохранители,
 // а не быстрый путь.
 func emptyScope() Scope {
-	return Scope{UserID: 1, Dict: &fakeDict{}, Usage: noUsage{}}
+	return Scope{Payer: testMembers()[0], Dict: &fakeDict{}, Usage: noUsage{}}
 }
 
 func TestOpenBreakerSkipsNetworkAndDegrades(t *testing.T) {
@@ -151,7 +151,7 @@ func TestExhaustedBudgetSkipsNetworkAndDegrades(t *testing.T) {
 // failingLLM всегда возвращает ошибку сервиса.
 type failingLLM struct{ calls int }
 
-func (f *failingLLM) Parse(context.Context, UsageRecorder, string, []storage.Category) ([]RawItem, error) {
+func (f *failingLLM) Parse(context.Context, UsageRecorder, Request) ([]RawItem, error) {
 	f.calls++
 	return nil, httpErr()
 }

@@ -81,7 +81,7 @@ func (b *Bot) onText(c tele.Context) error {
 
 	classifyCtx, cancelClassify := b.classifyCtx()
 	res, err := b.classifier.Classify(classifyCtx, classify.Scope{
-		UserID: sender.ID, Dict: group, Usage: group,
+		Payer: member, Dict: group, Usage: group,
 	}, text)
 	cancelClassify()
 	if err != nil {
@@ -150,10 +150,6 @@ func parseCommand(text string) (name, payload string) {
 }
 
 // save записывает трату и запоминает слова описания в личном словаре (§8).
-//
-// Получатель — всегда плательщик: модель его не определяет, а «на всю группу»
-// было бы утверждением, которого никто не делал. Разложить трату по людям
-// можно будет в приложении (фаза 2, фаза 5).
 func (b *Bot) save(ctx context.Context, g *storage.GroupStore, member storage.Member,
 	raw string, item classify.Item, cats []storage.Category, now time.Time) (storage.Transaction, error) {
 	tx := storage.Transaction{
@@ -165,11 +161,9 @@ func (b *Bot) save(ctx context.Context, g *storage.GroupStore, member storage.Me
 		Description:         item.Description,
 		CategoryID:          item.CategoryID,
 		RawText:             raw,
+		Recipients:          item.Recipients,
 		NeedsClassification: item.NeedsClassification,
 		SpentAt:             now.AddDate(0, 0, -item.DaysAgo),
-	}
-	if item.Kind == classify.KindExpense {
-		tx.Recipients = []int64{member.ID}
 	}
 
 	id, err := g.InsertTransaction(ctx, tx)
@@ -194,8 +188,9 @@ func (b *Bot) rememberWords(ctx context.Context, g *storage.GroupStore, userID i
 	if item.CategoryID == nil || item.Kind != classify.KindExpense {
 		return
 	}
+	member := classify.RememberedRecipient(item)
 	for _, w := range item.Words {
-		if err := g.UpsertWord(ctx, userID, w, *item.CategoryID, nil, storage.SourceLLM); err != nil {
+		if err := g.UpsertWord(ctx, userID, w, *item.CategoryID, member, storage.SourceLLM); err != nil {
 			b.log.Warn("не запомнил слово", "err", err, "word", w)
 		}
 	}

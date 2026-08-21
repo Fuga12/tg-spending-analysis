@@ -19,9 +19,10 @@ type Transaction struct {
 	ID            int64
 	GroupID       int64
 	PayerMemberID int64
-	// PayerUserID заполняется там, где нужен личный словарь плательщика:
-	// словарь принадлежит человеку, а не его строке в members.
+	// PayerUserID и PayerName заполняются там, где плательщика мало назвать
+	// номером строки: словарь принадлежит человеку, а промпту нужно его имя.
 	PayerUserID int64
+	PayerName   string
 	Recipients  []int64
 
 	Kind         string
@@ -280,16 +281,26 @@ func (g *GroupStore) TransactionsBetween(ctx context.Context, from, to time.Time
 // категорию. Метод административный: очередь общая на все группы, и воркер
 // обходит её целиком.
 //
-// Порядок — по id, то есть в порядке поступления. Это несправедливо к малым
-// группам: одна активная забьёт батч целиком. Справедливый обход — фаза 2.5.
+// Обход по кругу, а не подряд по id: группа, в которой сегодня записали сорок
+// трат при лежащем API, иначе забила бы весь батч, и в маленькой группе
+// человек ждал бы своей категории часами. Каждой группе даётся её самая
+// старая запись, потом вторая по старшинству, и так далее — очередь всё равно
+// разгребается от старого к новому, но не за счёт остальных.
 func (s *Store) PendingClassification(ctx context.Context, limit int) ([]Transaction, error) {
 	rows, err := s.pool.Query(ctx, `
-		select t.id, t.group_id, t.payer_member_id, m.user_id, t.kind, t.amount::text,
-		       t.description, t.raw_text, t.spent_at, t.created_at
-		from transactions t
-		join members m on m.id = t.payer_member_id
-		where t.needs_classification and t.deleted_at is null
-		order by t.id
+		select t.id, t.group_id, t.payer_member_id, t.user_id, t.name, t.kind,
+		       t.amount, t.description, t.raw_text, t.spent_at, t.created_at
+		from (
+			select t.id, t.group_id, t.payer_member_id, m.user_id, u.name, t.kind,
+			       t.amount::text as amount, t.description, t.raw_text,
+			       t.spent_at, t.created_at,
+			       row_number() over (partition by t.group_id order by t.id) as turn
+			from transactions t
+			join members m on m.id = t.payer_member_id
+			join users u on u.id = m.user_id
+			where t.needs_classification and t.deleted_at is null
+		) t
+		order by t.turn, t.id
 		limit $1`, limit)
 	if err != nil {
 		return nil, err
@@ -302,7 +313,7 @@ func (s *Store) PendingClassification(ctx context.Context, limit int) ([]Transac
 			t      Transaction
 			amount string
 		)
-		if err := rows.Scan(&t.ID, &t.GroupID, &t.PayerMemberID, &t.PayerUserID,
+		if err := rows.Scan(&t.ID, &t.GroupID, &t.PayerMemberID, &t.PayerUserID, &t.PayerName,
 			&t.Kind, &amount, &t.Description, &t.RawText, &t.SpentAt, &t.CreatedAt); err != nil {
 			return nil, err
 		}

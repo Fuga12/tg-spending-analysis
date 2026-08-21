@@ -23,6 +23,14 @@ type RawItem struct {
 	Category    string      `json:"category"`
 	Kind        string      `json:"kind"`
 	DaysAgo     int         `json:"days_ago"`
+
+	// Recipients — имена участников, которым досталась трата, или «на всех».
+	Recipients []string `json:"recipients"`
+
+	// RecipientsStated — сказано ли в сообщении, кому трата, прямым текстом.
+	// Если нет, получателя даёт не догадка модели, а умолчание категории:
+	// свои привычки люди знают лучше (см. validate.go).
+	RecipientsStated bool `json:"recipients_stated"`
 }
 
 // UsageRecorder — куда писать расход токенов. После каждого вызова,
@@ -92,7 +100,7 @@ func (y *Yandex) ModelURI() string {
 
 // Parse отправляет сообщение модели. Один ретрай при 5xx и таймауте,
 // backoff 500 мс. Ошибку квоты ретрай не лечит, поэтому для неё повтора нет.
-func (y *Yandex) Parse(ctx context.Context, usage UsageRecorder, text string, cats []storage.Category) ([]RawItem, error) {
+func (y *Yandex) Parse(ctx context.Context, usage UsageRecorder, req Request) ([]RawItem, error) {
 	const retryBackoff = 500 * time.Millisecond
 
 	var lastErr error
@@ -105,7 +113,7 @@ func (y *Yandex) Parse(ctx context.Context, usage UsageRecorder, text string, ca
 			}
 		}
 
-		items, err := y.call(ctx, usage, text, cats)
+		items, err := y.call(ctx, usage, req)
 		if err == nil {
 			return items, nil
 		}
@@ -121,8 +129,8 @@ func (y *Yandex) Parse(ctx context.Context, usage UsageRecorder, text string, ca
 	return nil, lastErr
 }
 
-func (y *Yandex) call(ctx context.Context, usage UsageRecorder, text string, cats []storage.Category) ([]RawItem, error) {
-	body, err := json.Marshal(y.request(text, cats))
+func (y *Yandex) call(ctx context.Context, usage UsageRecorder, req Request) ([]RawItem, error) {
+	body, err := json.Marshal(y.request(req))
 	if err != nil {
 		return nil, &Error{Kind: storage.ErrKindOther, Err: err}
 	}
@@ -130,18 +138,18 @@ func (y *Yandex) call(ctx context.Context, usage UsageRecorder, text string, cat
 	callCtx, cancel := context.WithTimeout(ctx, y.timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, y.baseURL+"/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, y.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, &Error{Kind: storage.ErrKindOther, Err: err}
 	}
-	req.Header.Set("Authorization", "Api-Key "+y.apiKey)
-	req.Header.Set("OpenAI-Project", y.folderID)
-	req.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Api-Key "+y.apiKey)
+	httpReq.Header.Set("OpenAI-Project", y.folderID)
+	httpReq.Header.Set("Content-Type", "application/json")
 	// Через API едет история личных трат — логирование на стороне Яндекса
 	// должно быть выключено (§6).
-	req.Header.Set("x-data-logging-enabled", "false")
+	httpReq.Header.Set("x-data-logging-enabled", "false")
 
-	resp, err := y.client.Do(req)
+	resp, err := y.client.Do(httpReq)
 	if err != nil {
 		kind := transportErrKind(ctx, callCtx, err)
 		y.record(ctx, usage, 0, 0, false, kind)
@@ -209,45 +217,25 @@ func (y *Yandex) call(ctx context.Context, usage UsageRecorder, text string, cat
 
 // request собирает тело запроса: строгий JSON-схемный ответ, нулевая
 // температура, без стриминга и без истории диалога (§6).
-func (y *Yandex) request(text string, cats []storage.Category) map[string]any {
+func (y *Yandex) request(req Request) map[string]any {
 	return map[string]any{
 		"model":       y.ModelURI(),
 		"temperature": 0,
 		"max_tokens":  500,
 		"stream":      false,
 		"messages": []map[string]string{
-			{"role": "system", "content": systemPrompt + categoryBlock(cats)},
-			{"role": "user", "content": text},
+			{"role": "system", "content": SystemPrompt(req)},
+			{"role": "user", "content": req.Text},
 		},
-		"response_format": responseFormat(cats),
+		"response_format": responseFormat(req),
 	}
 }
 
-// categoryBlock перечисляет категории списком в конце системного промпта.
-//
-// Подсказки лежат и в описании поля схемы, но там они слипаются в одну
-// длинную строку и тонут: «пиво» уходило в Продукты при живой категории
-// «Алкоголь — пиво, вино и тп». Списком модель их читает.
-func categoryBlock(cats []storage.Category) string {
-	var b strings.Builder
-	b.WriteString("\n\nКатегории и что к ним относится:\n")
-	for _, c := range cats {
-		b.WriteString("- " + c.Name)
-		if c.Hint != "" {
-			b.WriteString(" — " + c.Hint)
-		}
-		b.WriteString("\n")
-	}
-	b.WriteString("\nЕсли трата подходит под подсказку конкретной категории, выбирай её, " +
-		"даже когда подходит и более общая. «Пиво» при наличии категории про алкоголь — " +
-		"это алкоголь, а не продукты.")
-	return b.String()
-}
-
-// responseFormat — JSON-схема ответа. Список категорий берётся из таблицы
-// categories, а не из константы: иначе схема и БД разъедутся при первом же
-// изменении (§6).
-func responseFormat(cats []storage.Category) map[string]any {
+// responseFormat — JSON-схема ответа. Списки категорий и участников берутся
+// из состояния группы, а не из константы: иначе схема и БД разъедутся при
+// первом же изменении (§6).
+func responseFormat(req Request) map[string]any {
+	cats := req.Cats
 	names := make([]string, 0, len(cats))
 	hints := make([]string, 0, len(cats))
 	for _, c := range cats {
@@ -289,6 +277,21 @@ func responseFormat(cats []storage.Category) map[string]any {
 									"description": categoryDesc,
 									"enum":        names,
 								},
+								"recipients": map[string]any{
+									"type": "array",
+									"description": "Кому досталась трата. Только имена участников " +
+										"из списка или «" + Everyone + "», если трата общая",
+									"items": map[string]any{
+										"type": "string",
+										"enum": req.Roster.Enum(),
+									},
+								},
+								"recipients_stated": map[string]any{
+									"type": "boolean",
+									"description": "true, только если про получателя сказано прямо — " +
+										"по имени, «себе», «нам», «всем». " +
+										"Если это твоя догадка по смыслу — false",
+								},
 								"kind": map[string]any{
 									"type":        "string",
 									"description": "Тип операции",
@@ -300,7 +303,8 @@ func responseFormat(cats []storage.Category) map[string]any {
 								},
 							},
 							"required": []string{
-								"amount", "description", "category", "kind", "days_ago",
+								"amount", "description", "category",
+								"recipients", "recipients_stated", "kind", "days_ago",
 							},
 						},
 					},
@@ -310,52 +314,6 @@ func responseFormat(cats []storage.Category) map[string]any {
 		},
 	}
 }
-
-// systemPrompt — смысл зафиксирован §6, few-shot примеры покрывают простую
-// трату, две траты в одном сообщении, вчерашнюю и позавчерашнюю дату, перевод
-// и доход.
-//
-// Получателя модель больше не определяет: в группе до десяти человек его надо
-// называть по имени, а имена участников в промпт пока не подставляются.
-// Примеры с «ей» убраны — они учили модель ровно тому, чего от неё теперь не
-// ждут (фаза 2).
-const systemPrompt = `Ты разбираешь короткие сообщения о личных тратах на русском языке. Пишут разговорно, с сокращениями и опечатками.
-
-Правила:
-- Одно сообщение может содержать несколько трат — верни их отдельными элементами массива items.
-- amount — число ровно так, как записано в сообщении. Не пересчитывай его и не меняй разрядность. «к» означает тысячи: «5к» это 5000.
-- description — 1-3 слова по сути траты, без суммы и без указания, кому она.
-- kind: transfer — автор передал деньги другому человеку, а не купил что-то. income — поступление денег. В остальных случаях expense.
-- days_ago: 0, если про день ничего не сказано; 1 для «вчера»; 2 для «позавчера».
-
-Примеры разбора:
-
-"600 лимонад"
-{"items":[{"amount":600,"description":"лимонад","category":"Продукты","kind":"expense","days_ago":0}]}
-
-"такси 450 домой"
-{"items":[{"amount":450,"description":"такси","category":"Такси","kind":"expense","days_ago":0}]}
-
-"купил цветы 2500"
-{"items":[{"amount":2500,"description":"цветы","category":"Подарки","kind":"expense","days_ago":0}]}
-
-"вчера взял в пятёрочке на 1200 и такси 400 домой"
-{"items":[{"amount":1200,"description":"пятёрочка","category":"Продукты","kind":"expense","days_ago":1},{"amount":400,"description":"такси","category":"Такси","kind":"expense","days_ago":1}]}
-
-"позавчера аптека 780"
-{"items":[{"amount":780,"description":"аптека","category":"Здоровье","kind":"expense","days_ago":2}]}
-
-"скинул 5к"
-{"items":[{"amount":5000,"description":"перевод","category":"Прочее","kind":"transfer","days_ago":0}]}
-
-"зарплата 90000"
-{"items":[{"amount":90000,"description":"зарплата","category":"Прочее","kind":"income","days_ago":0}]}
-
-"жкх 4300 и интернет 700"
-{"items":[{"amount":4300,"description":"жкх","category":"Коммуналка","kind":"expense","days_ago":0},{"amount":700,"description":"интернет","category":"Связь и интернет","kind":"expense","days_ago":0}]}
-
-Отвечай только JSON по схеме, без пояснений.`
-
 func (y *Yandex) record(ctx context.Context, usage UsageRecorder, prompt, completion int, ok bool, errorKind string) {
 	// Запись расхода не должна пропасть из-за того, что истёк контекст запроса.
 	recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
