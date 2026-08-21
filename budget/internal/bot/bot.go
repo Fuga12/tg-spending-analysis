@@ -11,6 +11,7 @@ import (
 
 	"budget/internal/classify"
 	"budget/internal/config"
+	"budget/internal/group"
 	"budget/internal/storage"
 )
 
@@ -18,6 +19,7 @@ import (
 // команда /лимит могла спросить состояние предохранителей (§7).
 type Deps struct {
 	Store      *storage.Store
+	Groups     *group.Service
 	Classifier *classify.Service
 	Breaker    *classify.Breaker
 	Budget     *classify.Budget
@@ -28,6 +30,7 @@ type Bot struct {
 	tb         *tele.Bot
 	cfg        *config.Config
 	store      *storage.Store
+	groups     *group.Service
 	classifier *classify.Service
 	breaker    *classify.Breaker
 	budget     *classify.Budget
@@ -59,6 +62,7 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) (*Bot, error) {
 		tb:         tb,
 		cfg:        cfg,
 		store:      d.Store,
+		groups:     d.Groups,
 		classifier: d.Classifier,
 		breaker:    d.Breaker,
 		budget:     d.Budget,
@@ -187,5 +191,7 @@ func (b *Bot) routes() {
 
 	b.tb.Handle(btnDelete, b.onDelete)
 	b.tb.Handle(btnRestore, b.onRestore)
+	b.tb.Handle(btnInviteAccept, b.onInviteAccept)
+	b.tb.Handle(btnInviteDecline, b.onInviteDecline)
 	b.tb.Handle(tele.OnText, b.onText)
 }

@@ -108,11 +108,9 @@ func TestNotifyOnlySilentUsers(t *testing.T) {
 	record(t, g, members[0], now)
 
 	sender := &spySender{}
-	r := New(&config.Config{
-		AllowedUserIDs: []int64{talker, silent},
-		TZ:             time.UTC,
-		ReminderAt:     "21:00",
-	}, store, sender, quietLog())
+	// Whitelist здесь ни при чём: кому напоминать, решает состав групп.
+	// При открытом боте список пуст, и по нему не ушло бы никому.
+	r := New(&config.Config{TZ: time.UTC, ReminderAt: "21:00"}, store, sender, quietLog())
 
 	r.Notify(ctx, now)
 
@@ -138,7 +136,7 @@ func TestNotifyCountsTodaysActivityNotSpentDate(t *testing.T) {
 
 	sender := &spySender{}
 	r := New(&config.Config{
-		AllowedUserIDs: []int64{userID}, TZ: time.UTC, ReminderAt: "21:00",
+		TZ: time.UTC, ReminderAt: "21:00",
 	}, store, sender, quietLog())
 
 	r.Notify(ctx, now)
@@ -165,7 +163,7 @@ func TestNotifyIgnoresYesterdaysActivity(t *testing.T) {
 
 	sender := &spySender{}
 	r := New(&config.Config{
-		AllowedUserIDs: []int64{userID}, TZ: time.UTC, ReminderAt: "21:00",
+		TZ: time.UTC, ReminderAt: "21:00",
 	}, store, sender, quietLog())
 
 	r.Notify(ctx, now)
@@ -177,10 +175,35 @@ func TestNotifyIgnoresYesterdaysActivity(t *testing.T) {
 
 func TestStartValidatesSchedule(t *testing.T) {
 	r := New(&config.Config{
-		AllowedUserIDs: []int64{1}, TZ: time.UTC, ReminderAt: "25:99",
+		TZ: time.UTC, ReminderAt: "25:99",
 	}, nil, &spySender{}, quietLog())
 
 	if err := r.Start(); err == nil {
 		t.Error("кривое время должно валить старт напоминания")
+	}
+}
+
+func TestNotifySkipsPeopleWithoutGroup(t *testing.T) {
+	// Человек нашёл бота, но ни в какой группе не состоит: записывать ему
+	// некуда, и напоминать не о чем.
+	store := testStore(t)
+	ctx := context.Background()
+
+	const inGroup, alone = int64(905), int64(906)
+	testGroup(t, store, inGroup)
+	if err := store.EnsureUser(ctx, alone, "Одиночка"); err != nil {
+		t.Fatalf("пользователь: %v", err)
+	}
+
+	sender := &spySender{}
+	r := New(&config.Config{TZ: time.UTC, ReminderAt: "21:00"}, store, sender, quietLog())
+
+	r.Notify(ctx, time.Now())
+
+	if sender.sent[inGroup] != text {
+		t.Errorf("участнику группы напоминание не пришло: %+v", sender.sent)
+	}
+	if _, ok := sender.sent[alone]; ok {
+		t.Error("человеку без группы напоминать не о чем")
 	}
 }

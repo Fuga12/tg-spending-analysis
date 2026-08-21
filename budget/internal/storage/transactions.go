@@ -371,20 +371,37 @@ const (
 	KindTransfer = "transfer"
 )
 
-// HasRecordedOn — писал ли человек боту в этот день. Считается по created_at:
-// человек, записавший вечером вчерашние траты, ботом пользовался, и дёргать
-// его напоминанием незачем.
+// SilentMembers — кому сегодня стоит напомнить: участники групп, у которых
+// за период нет ни одной записи.
 //
-// Метод спрашивает про человека, а не про группу: состоит он ровно в одной,
-// и напоминание приходит ему, а не группе.
-func (s *Store) HasRecordedOn(ctx context.Context, userID int64, from, to time.Time) (bool, error) {
-	var exists bool
-	err := s.pool.QueryRow(ctx, `
-		select exists (
+// Молчание считается по created_at, а не по дате траты: человек, записавший
+// вечером вчерашние покупки, ботом пользовался, и дёргать его незачем.
+//
+// Метод административный: напоминание уходит всем группам разом, и обойти их
+// по одной значило бы держать в памяти список всех групп сервиса.
+func (s *Store) SilentMembers(ctx context.Context, from, to time.Time) ([]int64, error) {
+	rows, err := s.pool.Query(ctx, `
+		select distinct m.user_id
+		from members m
+		where m.left_at is null
+		  and not exists (
 			select 1 from transactions t
-			join members m on m.id = t.payer_member_id
-			where m.user_id = $1 and t.deleted_at is null
-			  and t.created_at >= $2 and t.created_at < $3
-		)`, userID, from, to).Scan(&exists)
-	return exists, err
+			where t.payer_member_id = m.id and t.deleted_at is null
+			  and t.created_at >= $1 and t.created_at < $2
+		  )
+		order by m.user_id`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }

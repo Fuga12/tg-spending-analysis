@@ -74,18 +74,20 @@ func (r *Reminder) run() {
 }
 
 // Notify шлёт напоминание тем, у кого сегодня нет ни одной записи.
+//
+// Кому напоминать, решает состав групп, а не whitelist: whitelist отвечает на
+// вопрос «пускать ли вообще» и при открытом боте пуст — по нему напоминание
+// не ушло бы никому. А тому, кто бота нашёл, но ни в какой группе не состоит,
+// напоминать не о чем: записывать ему всё равно некуда.
 func (r *Reminder) Notify(ctx context.Context, now time.Time) {
 	from, to := report.DayRange(now, r.cfg.TZ)
 
-	for _, userID := range r.cfg.AllowedUserIDs {
-		has, err := r.store.HasRecordedOn(ctx, userID, from, to)
-		if err != nil {
-			r.log.Error("не проверил траты за день", "err", err, "user_id", userID)
-			continue
-		}
-		if has {
-			continue
-		}
+	silent, err := r.store.SilentMembers(ctx, from, to)
+	if err != nil {
+		r.log.Error("не выбрал, кому напомнить", "err", err)
+		return
+	}
+	for _, userID := range silent {
 		if err := r.sender.Send(userID, text); err != nil {
 			r.log.Warn("не отправил напоминание", "err", err, "user_id", userID)
 		}

@@ -1,10 +1,13 @@
 package bot
 
 import (
+	"errors"
 	"strconv"
 	"testing"
 
 	tele "gopkg.in/telebot.v3"
+
+	"budget/internal/storage"
 )
 
 func TestParseCommandHandlesCyrillic(t *testing.T) {
@@ -134,4 +137,58 @@ func contains(s, sub string) bool {
 		}
 		return false
 	})()
+}
+
+func TestInviteMarkupOffersBothAnswers(t *testing.T) {
+	// Отвечать на приглашение из бота нужно: человека, которого зовут, в
+	// группе ещё нет, и открывать ради одного нажатия приложение — лишний шаг.
+	m := inviteMarkup(17)
+
+	if len(m.InlineKeyboard) != 1 || len(m.InlineKeyboard[0]) != 2 {
+		t.Fatalf("клавиатура = %+v, ожидались две кнопки в ряд", m.InlineKeyboard)
+	}
+	yes, no := m.InlineKeyboard[0][0], m.InlineKeyboard[0][1]
+	if yes.Unique != btnInviteAccept.Unique || no.Unique != btnInviteDecline.Unique {
+		t.Errorf("кнопки = %q и %q, ожидались принять и отказаться", yes.Unique, no.Unique)
+	}
+	if yes.Data != "17" || no.Data != "17" {
+		t.Errorf("данные кнопок = %q и %q, ожидался id приглашения", yes.Data, no.Data)
+	}
+}
+
+func TestEditOptionsClearOldButtons(t *testing.T) {
+	// Не передать разметку значит оставить старые кнопки под переписанным
+	// текстом: «принять» висело бы под ответом об отказе.
+	opts := editOptions(nil)
+	if len(opts) != 1 {
+		t.Fatalf("аргументы = %+v, ожидался один", opts)
+	}
+	markup, ok := opts[0].(*tele.ReplyMarkup)
+	if !ok || len(markup.InlineKeyboard) != 0 {
+		t.Errorf("аргумент = %+v, ожидалась пустая клавиатура", opts[0])
+	}
+}
+
+func TestInviteAnswerExplainsEachRefusal(t *testing.T) {
+	// Причин немного, и каждая означает разное: «уже в группе» лечится
+	// выходом, «просрочено» — новым приглашением.
+	seen := map[string]bool{}
+	for _, err := range []error{
+		storage.ErrNoInvite, storage.ErrInviteExpired,
+		storage.ErrAlreadyMember, storage.ErrGroupFull,
+	} {
+		text := inviteAnswer(err)
+		if text == "" || seen[text] {
+			t.Errorf("для %v текст = %q, ожидался свой", err, text)
+		}
+		seen[text] = true
+		if inviteToast(err) == "" {
+			t.Errorf("для %v нет короткой подсказки", err)
+		}
+	}
+
+	// Незнакомая ошибка не должна протекать наружу подробностями.
+	if inviteAnswer(errors.New("pq: connection refused")) != "Не получилось, попробуй ещё раз." {
+		t.Error("незнакомая ошибка должна отвечать общей фразой")
+	}
 }

@@ -13,6 +13,7 @@ import (
 	"budget/internal/bot"
 	"budget/internal/classify"
 	"budget/internal/config"
+	"budget/internal/group"
 	"budget/internal/reminder"
 	"budget/internal/storage"
 	"budget/internal/worker"
@@ -89,10 +90,17 @@ func main() {
 		func(text string) { notifyOwner(text) }, log)
 	classifier := classify.NewService(llm, breaker, budget, log)
 
+	// Уведомление о приглашении уходит через бота, а бот сам ходит в этот
+	// сервис — отсюда замыкание: к моменту первого вызова b уже собран.
 	var b *bot.Bot
+	groups := group.New(store, group.NotifyFunc(func(inv storage.Invite) error {
+		return b.InviteReceived(inv)
+	}), log)
+
 	for {
 		b, err = bot.New(cfg, bot.Deps{
 			Store:      store,
+			Groups:     groups,
 			Classifier: classifier,
 			Breaker:    breaker,
 			Budget:     budget,

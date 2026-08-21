@@ -491,10 +491,10 @@ func TestApplyClassificationClearsRecipientsOnTransfer(t *testing.T) {
 	}
 }
 
-func TestHasRecordedOnLooksAtPerson(t *testing.T) {
+func TestSilentMembersSkipsThoseWhoWrote(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
-	g, members := testGroup(t, s, 2)
+	g, members := testGroup(t, s, 3)
 
 	now := time.Now()
 	if _, err := g.InsertTransaction(ctx, Transaction{
@@ -505,14 +505,67 @@ func TestHasRecordedOnLooksAtPerson(t *testing.T) {
 		t.Fatalf("вставка: %v", err)
 	}
 
-	from, to := now.Add(-time.Hour), now.Add(time.Hour)
-	has, err := s.HasRecordedOn(ctx, members[0].UserID, from, to)
-	if err != nil || !has {
-		t.Errorf("писавший сегодня = %v (%v), ожидалось true", has, err)
+	// Человек вне групп напоминания не получает: записывать ему некуда.
+	if err := s.EnsureUser(ctx, 90, "Одиночка"); err != nil {
+		t.Fatalf("пользователь: %v", err)
 	}
-	has, err = s.HasRecordedOn(ctx, members[1].UserID, from, to)
-	if err != nil || has {
-		t.Errorf("молчавший сегодня = %v (%v), ожидалось false", has, err)
+
+	silent, err := s.SilentMembers(ctx, now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("выборка: %v", err)
+	}
+	want := map[int64]bool{members[1].UserID: true, members[2].UserID: true}
+	if len(silent) != len(want) {
+		t.Fatalf("молчунов %v, ожидались %v", silent, want)
+	}
+	for _, id := range silent {
+		if !want[id] {
+			t.Errorf("в молчунах %d, а он либо писал, либо не в группе", id)
+		}
+	}
+}
+
+func TestSilentMembersCountsDayOfRecordNotOfSpending(t *testing.T) {
+	// Человек вечером записал вчерашние покупки: ботом он пользовался,
+	// и дёргать его незачем.
+	s := testStore(t)
+	ctx := context.Background()
+	g, members := testGroup(t, s, 1)
+
+	now := time.Now()
+	if _, err := g.InsertTransaction(ctx, Transaction{
+		PayerMemberID: members[0].ID, Kind: KindExpense,
+		Amount: decimal.RequireFromString("100"), Description: "тест",
+		RawText: "тест", SpentAt: now.AddDate(0, 0, -1),
+	}); err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
+
+	silent, err := s.SilentMembers(ctx, now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("выборка: %v", err)
+	}
+	if len(silent) != 0 {
+		t.Errorf("молчунов %v, ожидалось пусто — запись сделана сегодня", silent)
+	}
+}
+
+func TestSilentMembersIgnoresThoseWhoLeft(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	g, members := testGroup(t, s, 2)
+
+	if err := g.Leave(ctx, members[1].UserID); err != nil {
+		t.Fatalf("выход: %v", err)
+	}
+
+	now := time.Now()
+	silent, err := s.SilentMembers(ctx, now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("выборка: %v", err)
+	}
+	if len(silent) != 1 || silent[0] != members[0].UserID {
+		t.Errorf("молчуны = %v, ожидался только оставшийся %d", silent, members[0].UserID)
 	}
 }
 

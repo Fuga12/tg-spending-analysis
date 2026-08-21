@@ -17,6 +17,25 @@ var (
 	btnRestore = &tele.InlineButton{Unique: "tx_undo", Text: "Вернуть"}
 )
 
+// Кнопки под приглашением в группу. Отвечать на приглашение из бота можно и
+// нужно: человек, которого только что позвали, ни в какой группе ещё не
+// состоит, и открывать ради одного нажатия приложение — лишний шаг.
+var (
+	btnInviteAccept  = &tele.InlineButton{Unique: "inv_yes", Text: "Принять"}
+	btnInviteDecline = &tele.InlineButton{Unique: "inv_no", Text: "Отказаться"}
+)
+
+// inviteMarkup — «принять» и «отказаться» под приглашением.
+func inviteMarkup(inviteID int64) *tele.ReplyMarkup {
+	id := strconv.FormatInt(inviteID, 10)
+	m := &tele.ReplyMarkup{}
+	m.InlineKeyboard = [][]tele.InlineButton{{
+		*btnInviteAccept.With(id),
+		*btnInviteDecline.With(id),
+	}}
+	return m
+}
+
 // txMarkup — клавиатура под свежей тратой.
 func txMarkup(txID int64) *tele.ReplyMarkup {
 	m := &tele.ReplyMarkup{}
@@ -50,6 +69,16 @@ func appMarkup(url string) *tele.ReplyMarkup {
 func sendOptions(markup *tele.ReplyMarkup) []any {
 	if markup == nil {
 		return nil
+	}
+	return []any{markup}
+}
+
+// editOptions — то же для Edit, но с пустой клавиатурой вместо ничего:
+// не передать разметку значит оставить старые кнопки под переписанным
+// текстом, и «принять» осталось бы висеть под ответом об отказе.
+func editOptions(markup *tele.ReplyMarkup) []any {
+	if markup == nil {
+		return []any{&tele.ReplyMarkup{}}
 	}
 	return []any{markup}
 }
