@@ -12,7 +12,7 @@ func TestInsertAndReadTransaction(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 
-	if err := s.UpsertUser(ctx, 1, "Илья"); err != nil {
+	if err := s.EnsureUser(ctx, 1, "Тест"); err != nil {
 		t.Fatalf("пользователь: %v", err)
 	}
 	cats, _ := s.Categories(ctx)
@@ -192,7 +192,7 @@ func TestAmountMustBePositive(t *testing.T) {
 
 func mustUser(t *testing.T, s *Store, id int64) {
 	t.Helper()
-	if err := s.UpsertUser(context.Background(), id, "Тест"); err != nil {
+	if err := s.EnsureUser(context.Background(), id, "Тест"); err != nil {
 		t.Fatalf("пользователь: %v", err)
 	}
 }

@@ -37,6 +37,35 @@ func testStore(t *testing.T) *Store {
 	return s
 }
 
+func TestEnsureUserDoesNotOverwriteChosenName(t *testing.T) {
+	// EnsureUser зовётся на каждое сообщение и подставляет имя из профиля
+	// Telegram. Имя, выбранное человеком в приложении, оно затирать не имеет
+	// права: Telegram зовёт «Ульяночка», в бюджете она Уля.
+	s := testStore(t)
+	ctx := context.Background()
+
+	if err := s.EnsureUser(ctx, 1, "Ульяночка"); err != nil {
+		t.Fatalf("заведение: %v", err)
+	}
+	if err := s.SetName(ctx, 1, "Уля"); err != nil {
+		t.Fatalf("переименование: %v", err)
+	}
+	if err := s.EnsureUser(ctx, 1, "Ульяночка"); err != nil {
+		t.Fatalf("повторное сообщение: %v", err)
+	}
+
+	users, err := s.Users(ctx)
+	if err != nil {
+		t.Fatalf("чтение участников: %v", err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("участников = %d, ожидался один", len(users))
+	}
+	if users[0].Name != "Уля" {
+		t.Errorf("имя = %q, ожидалось выбранное человеком «Уля»", users[0].Name)
+	}
+}
+
 func TestMigrationsSeedSchema(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -77,7 +106,7 @@ func TestLookupWordsPrefersPersonalCache(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 
-	if err := s.UpsertUser(ctx, 1, "Илья"); err != nil {
+	if err := s.EnsureUser(ctx, 1, "Тест"); err != nil {
 		t.Fatalf("пользователь: %v", err)
 	}
 	cats, _ := s.Categories(ctx)
@@ -110,7 +139,7 @@ func TestUpsertWordDoesNotOverwriteManual(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 
-	if err := s.UpsertUser(ctx, 1, "Илья"); err != nil {
+	if err := s.EnsureUser(ctx, 1, "Тест"); err != nil {
 		t.Fatalf("пользователь: %v", err)
 	}
 	cats, _ := s.Categories(ctx)
@@ -151,7 +180,7 @@ func TestForgetLLMWordsKeepsManual(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 
-	if err := s.UpsertUser(ctx, 1, "Илья"); err != nil {
+	if err := s.EnsureUser(ctx, 1, "Тест"); err != nil {
 		t.Fatalf("пользователь: %v", err)
 	}
 	cats, _ := s.Categories(ctx)

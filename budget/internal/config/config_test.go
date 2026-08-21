@@ -1,88 +1,83 @@
 package config
 
 import (
-	"strings"
 	"testing"
 )
 
-func TestCheckWeb(t *testing.T) {
-	cases := []struct {
-		name     string
-		cfg      Config
-		wantErr  bool
-		errMatch string
-	}{
-		{
-			name: "веб выключен",
-			cfg:  Config{},
-		},
-		{
-			name: "https без оговорок",
-			cfg:  Config{WebBaseURL: "https://budget.example.com"},
-		},
-		{
-			name:     "http без явного разрешения",
-			cfg:      Config{WebBaseURL: "http://84.252.135.13:8081"},
-			wantErr:  true,
-			errMatch: "WEB_INSECURE_COOKIES",
-		},
-		{
-			name: "http с явным разрешением",
-			cfg:  Config{WebBaseURL: "http://84.252.135.13:8081", WebInsecureCookies: true},
-		},
-		{
-			name:     "адрес без схемы",
-			cfg:      Config{WebBaseURL: "84.252.135.13:8081", WebInsecureCookies: true},
-			wantErr:  true,
-			errMatch: "http://",
-		},
-		{
-			name: "схема в верхнем регистре",
-			cfg:  Config{WebBaseURL: "HTTPS://budget.example.com"},
-		},
-		{
-			name:     "схема не та",
-			cfg:      Config{WebBaseURL: "ftp://budget.example.com", WebInsecureCookies: true},
-			wantErr:  true,
-			errMatch: "http://",
-		},
-	}
+func TestParseIDs(t *testing.T) {
+	t.Run("список", func(t *testing.T) {
+		ids, err := parseIDs(" 111 , 222 ,333 ")
+		if err != nil {
+			t.Fatalf("неожиданная ошибка: %v", err)
+		}
+		if len(ids) != 3 || ids[0] != 111 || ids[2] != 333 {
+			t.Errorf("ids = %v, ожидалось [111 222 333]", ids)
+		}
+	})
 
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			err := c.cfg.checkWeb()
-			if c.wantErr && err == nil {
-				t.Fatal("ожидалась ошибка")
-			}
-			if !c.wantErr && err != nil {
-				t.Fatalf("неожиданная ошибка: %v", err)
-			}
-			if err != nil && c.errMatch != "" && !strings.Contains(err.Error(), c.errMatch) {
-				t.Errorf("ошибка = %q, ожидалось упоминание %q", err, c.errMatch)
+	t.Run("пусто — это открытый бот, а не ошибка", func(t *testing.T) {
+		ids, err := parseIDs("")
+		if err != nil {
+			t.Fatalf("пустой список не должен быть ошибкой: %v", err)
+		}
+		if len(ids) != 0 {
+			t.Errorf("ids = %v, ожидался пустой", ids)
+		}
+	})
+
+	for _, c := range []struct{ name, in string }{
+		{"не число", "111,абв"},
+		{"дубль", "111,111"},
+	} {
+		t.Run("отказ: "+c.name, func(t *testing.T) {
+			if _, err := parseIDs(c.in); err == nil {
+				t.Errorf("%q не должно приниматься", c.in)
 			}
 		})
 	}
 }
 
-func TestWebDefaults(t *testing.T) {
+func TestWhitelist(t *testing.T) {
+	open := &Config{}
+	if open.WhitelistEnabled() {
+		t.Error("пустой список — whitelist выключен")
+	}
+	// Пока список пуст, бот открыт: кто с кем ведёт бюджет, решает группа.
+	if !open.IsAllowed(777) {
+		t.Error("при выключенном whitelist пускаем всех")
+	}
+	if open.OwnerID() != 0 {
+		t.Error("без whitelist владельца нет")
+	}
+
+	closed := &Config{AllowedUserIDs: []int64{111, 222}}
+	if !closed.WhitelistEnabled() {
+		t.Error("непустой список — whitelist включён")
+	}
+	if !closed.IsAllowed(222) || closed.IsAllowed(333) {
+		t.Error("пускаем только тех, кто в списке")
+	}
+	if closed.OwnerID() != 111 {
+		t.Errorf("владелец = %d, ожидался первый id", closed.OwnerID())
+	}
+}
+
+func TestLoadDefaults(t *testing.T) {
 	t.Setenv("BOT_TOKEN", "t")
 	t.Setenv("DATABASE_URL", "postgres://x")
-	t.Setenv("ALLOWED_USER_IDS", "1,2")
 	t.Setenv("YANDEX_API_KEY", "k")
 	t.Setenv("YANDEX_FOLDER_ID", "f")
+	t.Setenv("ALLOWED_USER_IDS", "1,2")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("конфиг: %v", err)
 	}
-	if cfg.WebAddr != "127.0.0.1:8081" {
-		t.Errorf("WEB_ADDR по умолчанию = %q, ожидался 127.0.0.1:8081", cfg.WebAddr)
-	}
-	if cfg.WebEnabled() {
-		t.Error("без WEB_BASE_URL веб должен быть выключен")
-	}
 	if cfg.OwnerID() != 1 {
 		t.Errorf("владелец = %d, ожидался первый id из whitelist", cfg.OwnerID())
+	}
+	if cfg.LLMTimeout == 0 || cfg.LLMBreakerCooldown == 0 {
+		t.Error("умолчания предохранителей не проставились")
 	}
 }
 

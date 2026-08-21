@@ -14,12 +14,36 @@ type User struct {
 	AvatarAt *time.Time
 }
 
-// UpsertUser заводит пользователя или обновляет имя, если оно изменилось.
-func (s *Store) UpsertUser(ctx context.Context, id int64, name string) error {
+// MaxNameLen — потолок длины имени.
+const MaxNameLen = 32
+
+// EnsureUser заводит пользователя при первом обращении.
+//
+// Имя приходит из профиля Telegram — в открытом боте взять его больше
+// неоткуда. Но только при заведении: `do nothing` защищает имя, которое
+// человек потом поставит себе сам в приложении, от затирания на каждом
+// сообщении. Telegram зовёт «Ульяночка», в бюджете она Уля.
+func (s *Store) EnsureUser(ctx context.Context, id int64, name string) error {
 	_, err := s.pool.Exec(ctx, `
 		insert into users (id, name) values ($1, $2)
-		on conflict (id) do nothing`, id, name)
+		on conflict (id) do nothing`, id, trimTo(name, MaxNameLen))
 	return err
+}
+
+// SetName ставит имя, выбранное самим человеком в приложении.
+func (s *Store) SetName(ctx context.Context, id int64, name string) error {
+	_, err := s.pool.Exec(ctx, `update users set name = $2 where id = $1`,
+		id, trimTo(name, MaxNameLen))
+	return err
+}
+
+// trimTo обрезает строку до n символов, не разрывая руны.
+func trimTo(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }
 
 // Users возвращает всех известных боту пользователей. Нужен отчёту: чтобы
@@ -40,15 +64,6 @@ func (s *Store) Users(ctx context.Context) ([]User, error) {
 		out = append(out, u)
 	}
 	return out, rows.Err()
-}
-
-// EnsureUser заводит пользователя, если его ещё нет, и не трогает имя
-// существующего: перезаписывать чужое имя служебным нельзя.
-func (s *Store) EnsureUser(ctx context.Context, id int64, name string) error {
-	_, err := s.pool.Exec(ctx, `
-		insert into users (id, name) values ($1, $2)
-		on conflict (id) do nothing`, id, name)
-	return err
 }
 
 // Avatar — своё фото профиля. nil означает, что его не ставили: тогда

@@ -64,7 +64,7 @@ func newBackfill(t *testing.T, llm classify.LLM, breaker *classify.Breaker, budg
 func degradedTx(t *testing.T, store *storage.Store, userID int64, amount, raw string) int64 {
 	t.Helper()
 	ctx := context.Background()
-	if err := store.UpsertUser(ctx, userID, "Тест"); err != nil {
+	if err := store.EnsureUser(ctx, userID, "Тест"); err != nil {
 		t.Fatalf("пользователь: %v", err)
 	}
 	id, err := store.InsertTransaction(ctx, storage.Transaction{

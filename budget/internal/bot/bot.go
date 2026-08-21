@@ -135,23 +135,19 @@ func (b *Bot) classifyCtx() (context.Context, context.CancelFunc) {
 }
 
 func (b *Bot) routes() {
-	// Команды продублированы латиницей (§9).
+	// Две команды и текст — вся поверхность бота. Всё, что можно показать
+	// интерфейсом, живёт в приложении.
 	commands := []struct {
 		names   []string
 		handler tele.HandlerFunc
 	}{
 		{[]string{"/start"}, b.onStart},
-		{[]string{"/месяц", "/month"}, b.onMonth},
-		{[]string{"/день", "/day"}, b.onDay},
-		{[]string{"/лимит", "/usage"}, b.onUsage},
-		{[]string{"/категории", "/categories"}, b.onCategories},
 		{[]string{"/помощь", "/help"}, b.onHelp},
-		{[]string{"/вход", "/login"}, b.onLogin},
 	}
 
 	// telebot разбирает команды регуляркой с \w, под которую кириллица не
-	// подходит: «/месяц 6» до обработчика не доезжает и попадает в OnText,
-	// где записалось бы тратой на 6 ₽. Поэтому держим свой указатель команд
+	// подходит: «/помощь» до обработчика не доезжает и попадает в OnText,
+	// где записалось бы тратой. Поэтому держим свой указатель команд
 	// и разбираем такие сообщения сами — см. dispatchCommand.
 	b.commands = make(map[string]tele.HandlerFunc, 2*len(commands))
 	for _, cmd := range commands {
@@ -162,11 +158,4 @@ func (b *Bot) routes() {
 	}
 
 	b.tb.Handle(tele.OnText, b.onText)
-
-	b.tb.Handle(&tele.Btn{Unique: cbPayer}, b.onBeneficiary(classify.BenPayer))
-	b.tb.Handle(&tele.Btn{Unique: cbPartner}, b.onBeneficiary(classify.BenPartner))
-	b.tb.Handle(&tele.Btn{Unique: cbBoth}, b.onBeneficiary(classify.BenBoth))
-	b.tb.Handle(&tele.Btn{Unique: cbCategory}, b.onCategoryOpen)
-	b.tb.Handle(&tele.Btn{Unique: cbPick}, b.onCategoryPick)
-	b.tb.Handle(&tele.Btn{Unique: cbDelete}, b.onDelete)
 }

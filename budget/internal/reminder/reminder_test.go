@@ -58,7 +58,7 @@ func TestNotifyOnlySilentUsers(t *testing.T) {
 
 	const talker, silent = int64(901), int64(902)
 	for _, id := range []int64{talker, silent} {
-		if err := store.UpsertUser(ctx, id, "Тест"); err != nil {
+		if err := store.EnsureUser(ctx, id, "Тест"); err != nil {
 			t.Fatalf("пользователь: %v", err)
 		}
 	}
@@ -96,7 +96,7 @@ func TestNotifyCountsTodaysActivityNotSpentDate(t *testing.T) {
 	ctx := context.Background()
 
 	const userID = int64(903)
-	if err := store.UpsertUser(ctx, userID, "Тест"); err != nil {
+	if err := store.EnsureUser(ctx, userID, "Тест"); err != nil {
 		t.Fatalf("пользователь: %v", err)
 	}
 	now := time.Now()
@@ -126,7 +126,7 @@ func TestNotifyIgnoresYesterdaysActivity(t *testing.T) {
 	ctx := context.Background()
 
 	const userID = int64(904)
-	if err := store.UpsertUser(ctx, userID, "Тест"); err != nil {
+	if err := store.EnsureUser(ctx, userID, "Тест"); err != nil {
 		t.Fatalf("пользователь: %v", err)
 	}
 	now := time.Now()

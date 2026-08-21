@@ -12,14 +12,14 @@ import (
 	"budget/internal/storage"
 )
 
-const greeting = `Привет! Я веду наш общий бюджет.
+const greeting = `Привет! Я веду общий бюджет.
 
 Просто пиши тратами, как говоришь:
   600 лимонад
   такси 450
   вчера взял в пятёрочке на 1200 и такси 400
 
-Команды: /месяц, /день, /лимит, /категории, /помощь`
+Формат — в /помощь.`
 
 const noAmountReply = "Не вижу сумму. Например: 600 лимонад"
 
@@ -27,8 +27,8 @@ func (b *Bot) onStart(c tele.Context) error {
 	ctx, cancel := b.ctx()
 	defer cancel()
 
-	if err := b.store.UpsertUser(ctx, c.Sender().ID, displayName(c.Sender())); err != nil {
-		b.log.Error("upsert пользователя", "err", err, "user_id", c.Sender().ID)
+	if err := b.store.EnsureUser(ctx, c.Sender().ID, displayName(c.Sender())); err != nil {
+		b.log.Error("запись участника", "err", err, "user_id", c.Sender().ID)
 		return c.Send("Не смог записать тебя в базу, попробуй ещё раз.")
 	}
 	return c.Send(greeting)
@@ -45,11 +45,11 @@ func (b *Bot) onText(c tele.Context) error {
 	}
 
 	userCtx, cancelUser := b.ctx()
-	err := b.store.UpsertUser(userCtx, sender.ID, displayName(sender))
+	err := b.store.EnsureUser(userCtx, sender.ID, displayName(sender))
 	cancelUser()
 	if err != nil {
 		// Пользователь мог начать с траты, не нажав /start.
-		b.log.Error("upsert пользователя", "err", err, "user_id", sender.ID)
+		b.log.Error("запись участника", "err", err, "user_id", sender.ID)
 		return c.Send("База не отвечает, попробуй ещё раз.")
 	}
 
@@ -75,7 +75,6 @@ func (b *Bot) onText(c tele.Context) error {
 	}
 
 	now := time.Now()
-	partner := b.partnerName(ctx, sender.ID)
 	for _, item := range res.Items {
 		tx, err := b.save(ctx, sender.ID, text, item, cats, now)
 		if err != nil {
@@ -86,12 +85,16 @@ func (b *Bot) onText(c tele.Context) error {
 			continue
 		}
 		// Ошибка отправки одного ответа не должна лишать пользователя
-		// остальных: транзакции уже в базе, а кнопки приходят только с ними.
-		if err := c.Send(transactionLine(tx, now, b.cfg.TZ, partner), keyboardFor(tx, partner)); err != nil {
+		// остальных: транзакции уже в базе.
+		if err := c.Send(transactionLine(tx, now, b.cfg.TZ)); err != nil {
 			b.log.Error("не отправил ответ по трате", "err", err, "tx", tx.ID)
 		}
 	}
 	return nil
+}
+
+func (b *Bot) onHelp(c tele.Context) error {
+	return c.Send(helpText)
 }
 
 // dispatchCommand разбирает команду сам: до обработчиков telebot доезжают
@@ -170,7 +173,9 @@ func categoryName(cats []storage.Category, id int32) string {
 	return ""
 }
 
-// displayName — как звать пользователя в отчётах.
+// displayName — имя из профиля Telegram, которым пользователь заводится
+// в первый раз. Дальше его можно поменять в приложении, и оно не
+// перезатирается: см. storage.EnsureUser.
 func displayName(u *tele.User) string {
 	name := strings.TrimSpace(u.FirstName + " " + u.LastName)
 	if name == "" {

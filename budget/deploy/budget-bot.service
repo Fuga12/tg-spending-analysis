@@ -15,13 +15,13 @@ ExecStart=/opt/budget/bot
 Restart=always
 RestartSec=5
 
-# Остановка последовательная: веб (10 с) → обработчики бота (45 с) → воркер
+# Остановка последовательная: обработчики бота (45 с) → воркер
 # добора (45 с). Дефолтные 90 с systemd в этот бюджет не укладываются, а
 # SIGKILL посреди разбора означает потерянную трату (plan.md §8).
 TimeoutStopSec=120
 
 # Бот ходит только в Telegram, Yandex AI Studio и локальный Postgres,
-# а веб слушает локальный порт из WEB_ADDR — больше ему ничего не нужно.
+# больше ему ничего не нужно.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

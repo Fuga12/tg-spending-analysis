@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -13,8 +12,11 @@ import (
 
 // Config — вся настройка бота. Заполняется из окружения, см. .env.example.
 type Config struct {
-	BotToken       string
-	DatabaseURL    string
+	BotToken    string
+	DatabaseURL string
+	// AllowedUserIDs — кого вообще пускать в бота. Пустой список означает,
+	// что бот открыт: кто с кем ведёт бюджет, решает состав группы, а не эта
+	// настройка. Первый id считается владельцем сервиса.
 	AllowedUserIDs []int64
 	TZ             *time.Location
 	ReminderAt     string // "HH:MM"
@@ -32,18 +34,14 @@ type Config struct {
 	// локально, где бэкапов и не бывает.
 	BackupDir    string
 	BackupMaxAge time.Duration
-
-	// Веб-интерфейс (webapp.md). Пустой WebBaseURL означает «веба нет»:
-	// сервер не поднимается, бот работает как работал.
-	WebAddr            string
-	WebBaseURL         string
-	WebInsecureCookies bool
 }
 
-// WebEnabled — настроен ли веб-интерфейс.
-func (c *Config) WebEnabled() bool { return c.WebBaseURL != "" }
+// WhitelistEnabled — ограничен ли доступ списком. Пустой список означает
+// открытого бота.
+func (c *Config) WhitelistEnabled() bool { return len(c.AllowedUserIDs) > 0 }
 
-// OwnerID — первый id из whitelist, ему уходят служебные уведомления (§7).
+// OwnerID — первый id из whitelist, ему уходят служебные уведомления.
+// Ноль означает, что владелец не задан и отправлять их некому.
 func (c *Config) OwnerID() int64 {
 	if len(c.AllowedUserIDs) == 0 {
 		return 0
@@ -51,8 +49,11 @@ func (c *Config) OwnerID() int64 {
 	return c.AllowedUserIDs[0]
 }
 
-// IsAllowed — проверка whitelist. Другой авторизации нет и не нужно (§9).
+// IsAllowed — проверка whitelist. Пока список пуст, пускаем всех.
 func (c *Config) IsAllowed(id int64) bool {
+	if !c.WhitelistEnabled() {
+		return true
+	}
 	for _, allowed := range c.AllowedUserIDs {
 		if allowed == id {
 			return true
@@ -76,8 +77,6 @@ func Load() (*Config, error) {
 		LLMModel:       envDefault("LLM_MODEL", "yandexgpt/rc"),
 		ReminderAt:     envDefault("REMINDER_AT", "21:00"),
 		BackupDir:      os.Getenv("BACKUP_DIR"),
-		WebAddr:        envDefault("WEB_ADDR", "127.0.0.1:8081"),
-		WebBaseURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("WEB_BASE_URL")), "/"),
 	}
 
 	var missing []string
@@ -87,7 +86,6 @@ func Load() (*Config, error) {
 	}{
 		{"BOT_TOKEN", c.BotToken},
 		{"DATABASE_URL", c.DatabaseURL},
-		{"ALLOWED_USER_IDS", os.Getenv("ALLOWED_USER_IDS")},
 		{"YANDEX_API_KEY", c.YandexAPIKey},
 		{"YANDEX_FOLDER_ID", c.YandexFolderID},
 	} {
@@ -99,11 +97,11 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("не заданы обязательные переменные окружения: %s", strings.Join(missing, ", "))
 	}
 
-	ids, err := parseIDs(os.Getenv("ALLOWED_USER_IDS"))
+	allowed, err := parseIDs(os.Getenv("ALLOWED_USER_IDS"))
 	if err != nil {
 		return nil, fmt.Errorf("ALLOWED_USER_IDS: %w", err)
 	}
-	c.AllowedUserIDs = ids
+	c.AllowedUserIDs = allowed
 
 	loc, err := time.LoadLocation(envDefault("TZ", "Europe/Moscow"))
 	if err != nil {
@@ -133,78 +131,6 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	c.WebInsecureCookies = envBool("WEB_INSECURE_COOKIES")
-	if err := c.checkWeb(); err != nil {
-		return nil, err
-	}
-
-	return c, nil
-}
-
-// checkWeb проверяет настройку веба до старта: ошибка здесь дешевле, чем
-// неработающий вход, в котором виноватым выглядит бот.
-func (c *Config) checkWeb() error {
-	if !c.WebEnabled() {
-		return nil
-	}
-
-	// Адрес без схемы Telegram не сделает ссылкой, и вход не заработает —
-	// поэтому и неразбираемый адрес, и адрес без схемы дают одну подсказку.
-	u, err := url.Parse(c.WebBaseURL)
-	if err != nil {
-		return fmt.Errorf("WEB_BASE_URL должен начинаться с http:// или https:// (%w)", err)
-	}
-	if scheme := strings.ToLower(u.Scheme); scheme != "http" && scheme != "https" {
-		return errors.New("WEB_BASE_URL должен начинаться с http:// или https://")
-	}
-	if u.Host == "" {
-		return errors.New("WEB_BASE_URL: не разобрать адрес")
-	}
-	if !strings.EqualFold(u.Scheme, "https") && !c.WebInsecureCookies {
-		// Без TLS браузер выбросит cookie с флагом Secure, и вход будет
-		// молча не работать. Пусть это будет осознанным выбором.
-		return errors.New("WEB_BASE_URL без https требует WEB_INSECURE_COOKIES=1")
-	}
-	return nil
-}
-
-// LoadWeb — конфиг для режима «только веб»: ни токена бота, ни ключа Яндекса
-// он не требует. Нужен, чтобы поднимать интерфейс отдельно от бота, когда
-// правится фронт.
-func LoadWeb() (*Config, error) {
-	loadDotEnv(".env")
-
-	c := &Config{
-		DatabaseURL:        strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		WebAddr:            envDefault("WEB_ADDR", "127.0.0.1:8081"),
-		WebBaseURL:         strings.TrimRight(strings.TrimSpace(os.Getenv("WEB_BASE_URL")), "/"),
-		WebInsecureCookies: envBool("WEB_INSECURE_COOKIES"),
-	}
-	if c.DatabaseURL == "" {
-		return nil, errors.New("не задана переменная окружения DATABASE_URL")
-	}
-	if !c.WebEnabled() {
-		return nil, errors.New("не задана переменная окружения WEB_BASE_URL")
-	}
-	if err := c.checkWeb(); err != nil {
-		return nil, err
-	}
-
-	loc, err := time.LoadLocation(envDefault("TZ", "Europe/Moscow"))
-	if err != nil {
-		return nil, fmt.Errorf("TZ: %w", err)
-	}
-	c.TZ = loc
-
-	// Без whitelist веб стартует, но не пускает никого — и при этом на каждом
-	// запросе с живой cookie убивает сессии. Молча наполовину работать нельзя.
-	ids := strings.TrimSpace(os.Getenv("ALLOWED_USER_IDS"))
-	if ids == "" {
-		return nil, errors.New("не задана переменная окружения ALLOWED_USER_IDS")
-	}
-	if c.AllowedUserIDs, err = parseIDs(ids); err != nil {
-		return nil, fmt.Errorf("ALLOWED_USER_IDS: %w", err)
-	}
 	return c, nil
 }
 
@@ -237,8 +163,14 @@ func ParseHHMM(s string) (hour, min int, err error) {
 	return hour, min, nil
 }
 
+// parseIDs разбирает список telegram id через запятую. Пустой список —
+// не ошибка: он означает, что бот открыт для всех, кто его найдёт.
+//
+// Числа людей здесь больше не проверяем: кто с кем ведёт бюджет, решает
+// состав группы, а whitelist отвечает только на вопрос «пускать ли вообще».
 func parseIDs(s string) ([]int64, error) {
-	var ids []int64
+	var out []int64
+	seen := map[int64]bool{}
 	for _, part := range strings.Split(s, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -248,12 +180,13 @@ func parseIDs(s string) ([]int64, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%q не является telegram id", part)
 		}
-		ids = append(ids, id)
+		if seen[id] {
+			return nil, fmt.Errorf("id %d указан дважды", id)
+		}
+		seen[id] = true
+		out = append(out, id)
 	}
-	if len(ids) == 0 {
-		return nil, errors.New("список пуст")
-	}
-	return ids, nil
+	return out, nil
 }
 
 func envDefault(name, def string) string {

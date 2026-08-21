@@ -57,7 +57,7 @@ func TestSecondTimeResolvesFromCache(t *testing.T) {
 	ctx := context.Background()
 
 	const userID = int64(777)
-	if err := store.UpsertUser(ctx, userID, "Тест"); err != nil {
+	if err := store.EnsureUser(ctx, userID, "Тест"); err != nil {
 		t.Fatalf("пользователь: %v", err)
 	}
 	// Слово заведомо не из затравки, но могло остаться от прошлого прогона.
