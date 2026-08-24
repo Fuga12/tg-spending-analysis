@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Button, Cell, LargeTitle, List, Section, Tabbar } from "@telegram-apps/telegram-ui";
 import {
   ApiError,
   api,
@@ -17,9 +18,16 @@ import { money, monthName, plural } from "./format";
 import { slotClass, slotsFor } from "./slots";
 import { TxEdit } from "./TxEdit";
 import { TxList } from "./TxList";
-import { Empty, ErrorBar } from "./ui";
+import { Empty, ErrorBar, Loading } from "./ui";
 
 type Tab = "month" | "list" | "group" | "cats";
+
+const TABS: [Tab, string][] = [
+  ["month", "Месяц"],
+  ["list", "Траты"],
+  ["group", "Группа"],
+  ["cats", "Категории"],
+];
 
 export default function App() {
   const [state, setState] = useState<State | null>(null);
@@ -61,7 +69,11 @@ export default function App() {
   // неё месяц не переключить.
   useEffect(() => {
     if (!inGroup) return;
-    Promise.all([api.month(period.year, period.month), api.days(period.year, period.month), api.months()])
+    Promise.all([
+      api.month(period.year, period.month),
+      api.days(period.year, period.month),
+      api.months(),
+    ])
       .then(([m, d, ms]) => {
         setReport(m);
         setDays(d);
@@ -95,18 +107,15 @@ export default function App() {
 
   if (!state) {
     return (
-      <main className="app">
-        {error ? <ErrorBar text={error} onClose={() => setError("")} /> : <p className="loading">Секунду…</p>}
-      </main>
+      <List>{error ? <ErrorBar text={error} onClose={() => setError("")} /> : <Loading />}</List>
     );
   }
 
   if (!state.group) {
     return (
-      <main className="app">
-        {error && <ErrorBar text={error} onClose={() => setError("")} />}
+      <List>
         <NoGroupScreen state={state} onChanged={loadState} />
-      </main>
+      </List>
     );
   }
 
@@ -118,117 +127,107 @@ export default function App() {
   };
 
   return (
-    <main className="app">
-      {error && <ErrorBar text={error} onClose={() => setError("")} />}
+    <>
+      {/* Отступ снизу под таббар: иначе последняя строка списка уезжает
+          под него и до неё не дотянуться. */}
+      <List className="app">
+        {error && <ErrorBar text={error} onClose={() => setError("")} />}
 
-      {tab === "month" && report && (
-        <div className="screen">
-          <MonthStrip points={months} active={period} onPick={setPeriod} />
+        {tab === "month" && report && (
+          <>
+            <MonthStrip points={months} active={period} onPick={setPeriod} />
 
-          <header className="screen__head">
-            <h1>
-              {monthName(period.month)} {period.year}
-            </h1>
-            <p className="total">{money(report.total)}</p>
-            <Comparison report={report} />
-          </header>
+            <Section>
+              <div className="total">
+                <LargeTitle weight="1">{money(report.total)}</LargeTitle>
+                <span className="total__month">
+                  {monthName(period.month)} {period.year}
+                </span>
+                <Comparison report={report} />
+              </div>
+            </Section>
 
-          {report.review > 0 && (
-            <button
-              className="review"
-              onClick={() => drillTo({ pending: true })}
-              title="Категорию этим записям выбрал не человек"
-            >
-              {report.review} {plural(report.review, "запись", "записи", "записей")} стоит проверить
-            </button>
-          )}
+            {report.review > 0 && (
+              <Section footer="Категорию этим записям выбрал не человек, а бот — вслепую.">
+                <Cell onClick={() => drillTo({ pending: true })}>
+                  {report.review} {plural(report.review, "запись", "записи", "записей")} стоит проверить
+                </Cell>
+              </Section>
+            )}
 
-          <DayColumns days={days} today={todayISO()} />
+            <DayColumns days={days} today={todayISO()} />
 
-          <StackedBar
-            title="Кто платил"
-            lines={report.payers}
-            slotOf={(l) => slotClass(l.key, slots)}
-            activeKey={filter.payer ? `member:${filter.payer}` : undefined}
-            onPick={(l) => drillTo({ payer: l.id })}
-          />
-
-          <StackedBar
-            title="На кого ушло"
-            lines={report.beneficiaries}
-            slotOf={(l) => slotClass(l.key, slots)}
-            activeKey={
-              filter.recipient === "common"
-                ? "common"
-                : filter.recipient
-                  ? `member:${filter.recipient}`
-                  : undefined
-            }
-            onPick={(l) => drillTo({ recipient: l.key === "common" ? "common" : l.id })}
-          />
-
-          <CategoryBars
-            lines={report.categories}
-            activeID={filter.category ?? 0}
-            onPick={(id) => drillTo({ category: id })}
-          />
-        </div>
-      )}
-
-      {tab === "list" && (
-        <div className="screen">
-          <header className="screen__head">
-            <h1>Траты</h1>
-            <p className="screen__sub">
-              {monthName(period.month)} {period.year} · {total}{" "}
-              {plural(total, "запись", "записи", "записей")}
-            </p>
-          </header>
-
-          {hasFilter(filter) && (
-            <button className="filter-reset" onClick={() => setFilter({})}>
-              Показать все за месяц ✕
-            </button>
-          )}
-
-          {items.length === 0 ? (
-            <Empty title="Пусто" hint="Напиши боту тратой — она появится здесь." />
-          ) : (
-            <TxList
-              items={items}
-              members={state.members}
-              categories={state.categories}
-              slots={slots}
-              onPick={setEditing}
+            <StackedBar
+              title="Кто платил"
+              lines={report.payers}
+              slotOf={(l) => slotClass(l.key, slots)}
+              activeKey={filter.payer ? `member:${filter.payer}` : undefined}
+              onPick={(l) => drillTo({ payer: l.id })}
             />
-          )}
-        </div>
-      )}
 
-      {tab === "group" && <GroupScreen state={state} slots={slots} onChanged={loadState} />}
+            <StackedBar
+              title="На кого ушло"
+              lines={report.beneficiaries}
+              slotOf={(l) => slotClass(l.key, slots)}
+              activeKey={
+                filter.recipient === "common"
+                  ? "common"
+                  : filter.recipient
+                    ? `member:${filter.recipient}`
+                    : undefined
+              }
+              onPick={(l) => drillTo({ recipient: l.key === "common" ? "common" : l.id })}
+            />
 
-      {tab === "cats" && (
-        <Categories categories={state.categories} members={state.members} onChanged={loadState} />
-      )}
+            <CategoryBars
+              lines={report.categories}
+              activeID={filter.category ?? 0}
+              onPick={(id) => drillTo({ category: id })}
+            />
+          </>
+        )}
 
-      <nav className="tabs">
-        {(
-          [
-            ["month", "Месяц"],
-            ["list", "Траты"],
-            ["group", "Группа"],
-            ["cats", "Категории"],
-          ] as [Tab, string][]
-        ).map(([id, label]) => (
-          <button
-            key={id}
-            className={`tabs__item${tab === id ? " tabs__item--on" : ""}`}
-            onClick={() => setTab(id)}
-          >
-            {label}
-          </button>
+        {tab === "list" && (
+          <>
+            <Section
+              header={`${monthName(period.month)} ${period.year}`}
+              footer={`${total} ${plural(total, "запись", "записи", "записей")}`}
+            >
+              {hasFilter(filter) && (
+                <div className="sheet-actions">
+                  <Button size="s" mode="bezeled" stretched onClick={() => setFilter({})}>
+                    Показать все за месяц
+                  </Button>
+                </div>
+              )}
+            </Section>
+
+            {items.length === 0 ? (
+              <Empty title="Пусто" hint="Напиши боту тратой — она появится здесь." />
+            ) : (
+              <TxList
+                items={items}
+                members={state.members}
+                categories={state.categories}
+                slots={slots}
+                onPick={setEditing}
+              />
+            )}
+          </>
+        )}
+
+        {tab === "group" && <GroupScreen state={state} slots={slots} onChanged={loadState} />}
+
+        {tab === "cats" && (
+          <Categories categories={state.categories} members={state.members} onChanged={loadState} />
+        )}
+      </List>
+
+      <Tabbar>
+        {TABS.map(([id, label]) => (
+          <Tabbar.Item key={id} text={label} selected={tab === id} onClick={() => setTab(id)} />
         ))}
-      </nav>
+      </Tabbar>
 
       {editing && (
         <TxEdit
@@ -239,15 +238,17 @@ export default function App() {
           onClose={() => setEditing(null)}
           onDone={(next) => {
             setEditing(null);
-            // Отчёт пересчитывать надо: правка меняет и суммы, и раскладку.
             setItems((prev) =>
-              next ? prev.map((t) => (t.id === next.id ? next : t)) : prev.filter((t) => t.id !== editing.id),
+              next
+                ? prev.map((t) => (t.id === next.id ? next : t))
+                : prev.filter((t) => t.id !== editing.id),
             );
+            // Отчёт пересчитывается: правка меняет и суммы, и раскладку.
             setPeriod({ ...period });
           }}
         />
       )}
-    </main>
+    </>
   );
 }
 
@@ -266,14 +267,15 @@ function Comparison({ report }: { report: MonthReport }) {
   if (prev <= 0) return null;
 
   const delta = Math.round(((cur - prev) / prev) * 100);
-  if (delta === 0) return <p className="compare">столько же, сколько в прошлом месяце</p>;
+  if (delta === 0) return <span className="compare">столько же, сколько в прошлом месяце</span>;
 
   return (
-    <p className={`compare${delta > 0 ? " compare--up" : ""}`}>
+    <span className={`compare${delta > 0 ? " compare--up" : " compare--down"}`}>
       {delta > 0 ? "+" : "−"}
       {Math.abs(delta)}% к прошлому месяцу
-      {report.compare.partial && ` за те же ${report.compare.days} ${plural(report.compare.days, "день", "дня", "дней")}`}
-    </p>
+      {report.compare.partial &&
+        ` за те же ${report.compare.days} ${plural(report.compare.days, "день", "дня", "дней")}`}
+    </span>
   );
 }
 

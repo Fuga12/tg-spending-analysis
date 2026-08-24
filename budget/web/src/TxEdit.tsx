@@ -1,7 +1,14 @@
 import { useState } from "react";
+import { Button, Cell, Chip, Input, Section, SegmentedControl } from "@telegram-apps/telegram-ui";
 import { ApiError, api, type Category, type Member, type Tx } from "./api";
 import { money } from "./format";
-import { Sheet, Who } from "./ui";
+import { ErrorBar, Sheet, Who } from "./ui";
+
+const KINDS = [
+  { id: "expense", label: "Трата" },
+  { id: "income", label: "Поступление" },
+  { id: "transfer", label: "Перевод" },
+] as const;
 
 /**
  * Правка траты.
@@ -29,7 +36,7 @@ export function TxEdit({
   const [description, setDescription] = useState(tx.description);
   const [categoryID, setCategoryID] = useState<number | null>(tx.category_id);
   const [recipients, setRecipients] = useState<number[]>(tx.recipients);
-  const [kind, setKind] = useState(tx.kind);
+  const [kind, setKind] = useState<Tx["kind"]>(tx.kind);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -45,16 +52,17 @@ export function TxEdit({
     setBusy(true);
     setError("");
     try {
-      const next = await api.updateTx(tx.id, {
-        amount,
-        description,
-        category_id: categoryID,
-        clear_category: categoryID === null,
-        recipients: kind === "expense" ? recipients : [],
-        kind,
-        updated_at: tx.updated_at ?? "",
-      });
-      onDone(next);
+      onDone(
+        await api.updateTx(tx.id, {
+          amount,
+          description,
+          category_id: categoryID,
+          clear_category: categoryID === null,
+          recipients: kind === "expense" ? recipients : [],
+          kind,
+          updated_at: tx.updated_at ?? "",
+        }),
+      );
     } catch (e) {
       // Конфликт версий — не поломка, а другой человек, правивший ту же
       // трату. Об этом надо сказать словами, а не «попробуйте позже».
@@ -75,110 +83,94 @@ export function TxEdit({
   };
 
   return (
-    <Sheet
-      title="Трата"
-      onClose={onClose}
-      foot={
-        <>
-          <button className="btn btn--primary" onClick={save} disabled={busy}>
-            Сохранить
-          </button>
-          <button className="btn foot__danger" onClick={remove} disabled={busy}>
-            Удалить
-          </button>
-        </>
-      }
-    >
-      {error && <p className="field__error">{error}</p>}
+    <Sheet title="Трата" onClose={onClose}>
+      {error && <ErrorBar text={error} onClose={() => setError("")} />}
 
-      <label className="field">
-        <span className="field__label">Сумма</span>
-        <input
-          className="field__input"
+      <Section>
+        <Input
+          header="Сумма"
           inputMode="decimal"
           value={amount}
           onChange={(e) => setAmount(e.target.value.replace(",", "."))}
         />
-      </label>
-
-      <label className="field">
-        <span className="field__label">Что это было</span>
-        <input
-          className="field__input"
+        <Input
+          header="Что это было"
           value={description}
-          onChange={(e) => setDescription(e.target.value)}
           placeholder="пятёрочка"
+          onChange={(e) => setDescription(e.target.value)}
         />
-      </label>
+      </Section>
 
-      <div className="field">
-        <span className="field__label">Вид</span>
-        <div className="chips">
-          {(["expense", "income", "transfer"] as const).map((k) => (
-            <button
-              key={k}
-              className={`chip${kind === k ? " chip--on" : ""}`}
-              onClick={() => setKind(k)}
-            >
-              {k === "expense" ? "Трата" : k === "income" ? "Поступление" : "Перевод"}
-            </button>
+      <Section header="Вид">
+        <SegmentedControl>
+          {KINDS.map((k) => (
+            <SegmentedControl.Item key={k.id} selected={kind === k.id} onClick={() => setKind(k.id)}>
+              {k.label}
+            </SegmentedControl.Item>
           ))}
-        </div>
-      </div>
+        </SegmentedControl>
+      </Section>
 
       {kind !== "transfer" && (
-        <div className="field">
-          <span className="field__label">Категория</span>
+        <Section header="Категория">
           <div className="chips">
-            <button
-              className={`chip${categoryID === null ? " chip--on" : ""}`}
+            <Chip
+              mode={categoryID === null ? "elevated" : "outline"}
               onClick={() => setCategoryID(null)}
             >
               Без категории
-            </button>
+            </Chip>
             {categories.map((c) => (
-              <button
+              <Chip
                 key={c.id}
-                className={`chip${categoryID === c.id ? " chip--on" : ""}`}
+                mode={categoryID === c.id ? "elevated" : "outline"}
                 onClick={() => setCategoryID(c.id)}
               >
                 {c.name}
-              </button>
+              </Chip>
             ))}
           </div>
-        </div>
+        </Section>
       )}
 
       {kind === "expense" && (
-        <div className="field">
-          <span className="field__label">Кому</span>
-          {/* Пустой выбор — это «на всех», а не «не выбрано»: общая трата
-              не раскладывается по людям и стоит в отчёте отдельной строкой. */}
-          <button
-            className={`chip${recipients.length === 0 ? " chip--on" : ""}`}
+        <Section
+          header="Кому"
+          footer="Никого не выбрано — значит трата общая: в отчёте она стоит отдельной строкой и по людям не делится."
+        >
+          {/* Пустой выбор — это «на всех», а не «не выбрано». */}
+          <Cell
+            Component="label"
+            after={<input type="radio" checked={recipients.length === 0} readOnly />}
             onClick={() => setRecipients([])}
           >
             На всех
-          </button>
-          <div className="who-list">
-            {pickable.map((m) => (
-              <button
-                key={m.id}
-                className={`who-list__item${recipients.includes(m.id) ? " who-list__item--on" : ""}`}
-                onClick={() => toggle(m.id)}
-              >
-                <Who member={m} slot={slots.get(m.id) ?? 10} />
-                <span>{m.name}</span>
-                {m.left && <em className="who-list__left">вышел</em>}
-              </button>
-            ))}
-          </div>
-        </div>
+          </Cell>
+          {pickable.map((m) => (
+            <Cell
+              key={m.id}
+              Component="label"
+              before={<Who member={m} slot={slots.get(m.id) ?? 10} size={28} />}
+              after={<input type="checkbox" checked={recipients.includes(m.id)} readOnly />}
+              description={m.left ? "вышел из группы" : undefined}
+              onClick={() => toggle(m.id)}
+            >
+              {m.name}
+            </Cell>
+          ))}
+        </Section>
       )}
 
-      <p className="field__hint">
-        Записано как «{tx.raw_text}» · {money(tx.amount)}
-      </p>
+      <Section footer={`Записано как «${tx.raw_text}» · ${money(tx.amount)}`}>
+        <div className="sheet-actions">
+          <Button size="l" stretched loading={busy} onClick={save}>
+            Сохранить
+          </Button>
+          <Button size="l" stretched mode="plain" disabled={busy} onClick={remove}>
+            Удалить
+          </Button>
+        </div>
+      </Section>
     </Sheet>
   );
 }

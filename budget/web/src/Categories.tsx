@@ -1,6 +1,7 @@
 import { useState } from "react";
+import { Button, Cell, Chip, Input, Section } from "@telegram-apps/telegram-ui";
 import { ApiError, api, type Category, type Member } from "./api";
-import { Sheet } from "./ui";
+import { ErrorBar, Sheet } from "./ui";
 
 /**
  * Категории группы.
@@ -22,29 +23,35 @@ export function Categories({
   const byID = new Map(members.map((m) => [m.id, m]));
 
   return (
-    <div className="screen">
-      <header className="screen__head">
-        <h1>Категории</h1>
-        <p className="screen__sub">Подсказка помогает боту разбирать сообщения точнее.</p>
-      </header>
-
-      <ul className="cats">
+    <>
+      <Section
+        header="Категории"
+        footer="Подсказка уезжает боту вместе с сообщением и помогает ему разбирать траты точнее."
+      >
         {categories.map((c) => (
-          <li key={c.id}>
-            <button className="cats__item" onClick={() => setEditing(c)}>
-              <span className="cats__name">{c.name}</span>
-              {c.hint && <span className="cats__hint">{c.hint}</span>}
-              {c.default_to !== null && (
-                <span className="cats__to">по умолчанию — {byID.get(c.default_to)?.name ?? "кому-то"}</span>
-              )}
-            </button>
-          </li>
+          <Cell
+            key={c.id}
+            multiline
+            subtitle={c.hint || undefined}
+            description={
+              c.default_to !== null
+                ? `по умолчанию — ${byID.get(c.default_to)?.name ?? "кому-то"}`
+                : undefined
+            }
+            onClick={() => setEditing(c)}
+          >
+            {c.name}
+          </Cell>
         ))}
-      </ul>
+      </Section>
 
-      <button className="btn btn--primary" onClick={() => setEditing("new")}>
-        Добавить категорию
-      </button>
+      <Section>
+        <div className="sheet-actions">
+          <Button size="l" stretched onClick={() => setEditing("new")}>
+            Добавить категорию
+          </Button>
+        </div>
+      </Section>
 
       {editing && (
         <CategorySheet
@@ -57,7 +64,7 @@ export function Categories({
           }}
         />
       )}
-    </div>
+    </>
   );
 }
 
@@ -96,61 +103,48 @@ function CategorySheet({
   };
 
   return (
-    <Sheet
-      title={category ? "Категория" : "Новая категория"}
-      onClose={onClose}
-      foot={
-        <button className="btn btn--primary" onClick={save} disabled={busy}>
-          Сохранить
-        </button>
-      }
-    >
-      {error && <p className="field__error">{error}</p>}
+    <Sheet title={category ? "Категория" : "Новая категория"} onClose={onClose}>
+      {error && <ErrorBar text={error} onClose={() => setError("")} />}
 
-      <label className="field">
-        <span className="field__label">Название</span>
-        <input className="field__input" value={name} onChange={(e) => setName(e.target.value)} />
-      </label>
-
-      <label className="field">
-        <span className="field__label">Подсказка боту</span>
-        <input
-          className="field__input"
+      <Section>
+        <Input header="Название" value={name} onChange={(e) => setName(e.target.value)} />
+        <Input
+          header="Подсказка боту"
+          placeholder="пиво, вино, крепкое"
           value={hint}
           onChange={(e) => setHint(e.target.value)}
-          placeholder="пиво, вино, крепкое"
         />
-      </label>
+      </Section>
 
-      <div className="field">
-        <span className="field__label">Кому по умолчанию</span>
-        {/* «Косметика — Уле» верно и когда платит не Уля. Без адресата
-            трата уходит тому, кто её записал. */}
+      <Section
+        header="Кому по умолчанию"
+        footer="«Косметика — Уле» верно и когда платит не Уля. Без адресата трата уходит тому, кто её записал."
+      >
         <div className="chips">
-          <button
-            className={`chip${defaultTo === null ? " chip--on" : ""}`}
-            onClick={() => setDefaultTo(null)}
-          >
+          <Chip mode={defaultTo === null ? "elevated" : "outline"} onClick={() => setDefaultTo(null)}>
             Тому, кто платил
-          </button>
+          </Chip>
           {members
             .filter((m) => !m.left)
             .map((m) => (
-              <button
+              <Chip
                 key={m.id}
-                className={`chip${defaultTo === m.id ? " chip--on" : ""}`}
+                mode={defaultTo === m.id ? "elevated" : "outline"}
                 onClick={() => setDefaultTo(m.id)}
               >
                 {m.name}
-              </button>
+              </Chip>
             ))}
         </div>
-      </div>
+      </Section>
 
-      <p className="field__hint">
-        После правки категорий бот забывает свои прежние догадки — но не то,
-        что вы поправили руками.
-      </p>
+      <Section footer="После правки категорий бот забывает свои прежние догадки — но не то, что вы поправили руками.">
+        <div className="sheet-actions">
+          <Button size="l" stretched loading={busy} onClick={save}>
+            Сохранить
+          </Button>
+        </div>
+      </Section>
     </Sheet>
   );
 }

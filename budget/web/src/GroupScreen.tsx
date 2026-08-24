@@ -1,14 +1,14 @@
 import { useState } from "react";
+import { Button, Cell, Input, Section } from "@telegram-apps/telegram-ui";
 import { ApiError, api, type State } from "./api";
 import { plural } from "./format";
-import { Empty, Sheet, Who } from "./ui";
+import { Empty, ErrorBar, Sheet, Who } from "./ui";
 
 /**
  * Группа: состав, роли, приглашения.
  *
  * Зовут по telegram id, а не по логину: приглашение по логину некуда
- * доставить, а связать его с аккаунтом можно только на честном слове. Узнать
- * свой id человек может у любого бота вроде @userinfobot — это одна пересылка.
+ * доставить, а связать его с аккаунтом можно только на честном слове.
  */
 export function GroupScreen({
   state,
@@ -39,82 +39,75 @@ export function GroupScreen({
   };
 
   const confirmAnd = (question: string, fn: () => Promise<unknown>) => {
-    if (!window.confirm(question)) return;
-    void act(fn);
+    if (window.confirm(question)) void act(fn);
   };
 
   return (
-    <div className="screen">
-      <header className="screen__head">
-        <h1>{group.name}</h1>
-        <p className="screen__sub">
-          {active.length} {plural(active.length, "участник", "участника", "участников")} из{" "}
-          {state.max_members}
-        </p>
-      </header>
+    <>
+      {error && <ErrorBar text={error} onClose={() => setError("")} />}
 
-      {error && <p className="field__error">{error}</p>}
-
-      <ul className="members">
+      <Section
+        header={group.name}
+        footer={`${active.length} ${plural(active.length, "участник", "участника", "участников")} из ${state.max_members}`}
+      >
         {active.map((m) => (
-          <li key={m.id} className="members__item">
-            <Who member={m} slot={slots.get(m.id) ?? 10} size={32} />
-            <span className="members__name">
-              {m.name}
-              {m.id === group.member_id && <em> · это ты</em>}
-            </span>
-            {m.role === "admin" && <span className="members__role">админ</span>}
-
-            {amAdmin && m.id !== group.member_id && (
-              <span className="members__actions">
-                <button
-                  onClick={() =>
-                    act(() => api.setRole(m.id, m.role === "admin" ? "member" : "admin"))
-                  }
-                >
-                  {m.role === "admin" ? "Разжаловать" : "Сделать админом"}
-                </button>
-                <button
-                  className="members__danger"
-                  onClick={() => confirmAnd(`Исключить ${m.name}?`, () => api.removeMember(m.id))}
-                >
-                  Исключить
-                </button>
-              </span>
-            )}
-          </li>
+          <Cell
+            key={m.id}
+            before={<Who member={m} slot={slots.get(m.id) ?? 10} size={40} />}
+            description={m.role === "admin" ? "администратор" : undefined}
+            after={
+              amAdmin && m.id !== group.member_id ? (
+                <span className="row-actions">
+                  <Button
+                    size="s"
+                    mode="bezeled"
+                    onClick={() => act(() => api.setRole(m.id, m.role === "admin" ? "member" : "admin"))}
+                  >
+                    {m.role === "admin" ? "Разжаловать" : "В админы"}
+                  </Button>
+                  <Button
+                    size="s"
+                    mode="plain"
+                    onClick={() => confirmAnd(`Исключить ${m.name}?`, () => api.removeMember(m.id))}
+                  >
+                    Исключить
+                  </Button>
+                </span>
+              ) : undefined
+            }
+          >
+            {m.name}
+            {m.id === group.member_id && " · это ты"}
+          </Cell>
         ))}
-      </ul>
+      </Section>
 
       {left.length > 0 && (
-        <>
-          <h2 className="screen__section">Были в группе</h2>
-          {/* Ушедшие показаны отдельно: их траты остались в истории, и без
-              этого списка непонятно, откуда в отчёте берётся их имя. */}
-          <ul className="members members--muted">
-            {left.map((m) => (
-              <li key={m.id} className="members__item">
-                <Who member={m} slot={slots.get(m.id) ?? 10} size={32} />
-                <span className="members__name">{m.name}</span>
-              </li>
-            ))}
-          </ul>
-        </>
+        // Ушедшие показаны отдельно: их траты остались в истории, и без
+        // этого списка непонятно, откуда в отчёте берётся их имя.
+        <Section header="Были в группе">
+          {left.map((m) => (
+            <Cell key={m.id} before={<Who member={m} slot={slots.get(m.id) ?? 10} size={40} />}>
+              {m.name}
+            </Cell>
+          ))}
+        </Section>
       )}
 
-      <div className="screen__actions">
+      <Section>
         {amAdmin && (
-          <button className="btn btn--primary" disabled={full} onClick={() => setInviting(true)}>
-            {full ? "Группа заполнена" : "Пригласить"}
-          </button>
+          <div className="sheet-actions">
+            <Button size="l" stretched disabled={full} onClick={() => setInviting(true)}>
+              {full ? "Группа заполнена" : "Пригласить"}
+            </Button>
+          </div>
         )}
-        <button
-          className="btn foot__danger"
-          onClick={() => confirmAnd("Выйти из группы?", () => api.leave())}
-        >
-          Выйти из группы
-        </button>
-      </div>
+        <div className="sheet-actions">
+          <Button size="l" stretched mode="plain" onClick={() => confirmAnd("Выйти из группы?", () => api.leave())}>
+            Выйти из группы
+          </Button>
+        </div>
+      </Section>
 
       {inviting && (
         <InviteSheet
@@ -125,7 +118,7 @@ export function GroupScreen({
           }}
         />
       )}
-    </div>
+    </>
   );
 }
 
@@ -145,7 +138,7 @@ function InviteSheet({ onClose, onDone }: { onClose: () => void; onDone: () => v
     setError("");
     try {
       const inv = await api.invite(userID);
-      setSent(`Приглашение отправлено. Оно действует до ${new Date(inv.expires_at).toLocaleDateString("ru")}.`);
+      setSent(`Приглашение отправлено. Действует до ${new Date(inv.expires_at).toLocaleDateString("ru")}.`);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Не получилось пригласить.");
     } finally {
@@ -154,48 +147,41 @@ function InviteSheet({ onClose, onDone }: { onClose: () => void; onDone: () => v
   };
 
   return (
-    <Sheet
-      title="Пригласить"
-      onClose={onClose}
-      foot={
-        sent ? (
-          <button className="btn btn--primary" onClick={onDone}>
-            Готово
-          </button>
-        ) : (
-          <button className="btn btn--primary" onClick={send} disabled={busy}>
-            Пригласить
-          </button>
-        )
-      }
-    >
+    <Sheet title="Пригласить" onClose={onClose}>
       {sent ? (
-        <p className="field__hint">{sent}</p>
+        <Section footer={sent}>
+          <div className="sheet-actions">
+            <Button size="l" stretched onClick={onDone}>
+              Готово
+            </Button>
+          </div>
+        </Section>
       ) : (
-        <>
-          <label className="field">
-            <span className="field__label">Telegram id</span>
-            <input
-              className="field__input"
-              inputMode="numeric"
-              value={id}
-              onChange={(e) => setID(e.target.value)}
-              placeholder="123456789"
-            />
-          </label>
-          <p className="field__hint">
-            Позвать можно только того, кто уже писал боту: приглашение приходит
-            в тот же чат. Свой id человек узнаёт у @userinfobot.
-          </p>
-          {error && <p className="field__error">{error}</p>}
-        </>
+        <Section footer="Позвать можно только того, кто уже писал боту: приглашение приходит в тот же чат. Свой id человек узнаёт у @userinfobot.">
+          <Input
+            header="Telegram id"
+            inputMode="numeric"
+            placeholder="123456789"
+            status={error ? "error" : "default"}
+            value={id}
+            onChange={(e) => setID(e.target.value)}
+          />
+          {error && <ErrorBar text={error} onClose={() => setError("")} />}
+          <div className="sheet-actions">
+            <Button size="l" stretched loading={busy} onClick={send}>
+              Пригласить
+            </Button>
+          </div>
+        </Section>
       )}
     </Sheet>
   );
 }
 
-/** Экран для тех, кто ещё нигде не состоит: принять приглашение или завести
- *  свою группу. Третьего варианта нет. */
+/**
+ * Экран для тех, кто ещё нигде не состоит: принять приглашение или завести
+ * свою группу. Третьего варианта нет.
+ */
 export function NoGroupScreen({ state, onChanged }: { state: State; onChanged: () => void }) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -214,64 +200,51 @@ export function NoGroupScreen({ state, onChanged }: { state: State; onChanged: (
   };
 
   return (
-    <div className="screen">
-      <header className="screen__head">
-        <h1>Бюджет</h1>
-      </header>
+    <>
+      {error && <ErrorBar text={error} onClose={() => setError("")} />}
 
-      {error && <p className="field__error">{error}</p>}
-
-      {state.invites.length > 0 && (
-        <>
-          <h2 className="screen__section">Тебя зовут</h2>
-          <ul className="invites">
-            {state.invites.map((inv) => (
-              <li key={inv.id} className="invites__item">
-                <span>
-                  <b>{inv.inviter}</b> зовёт в «{inv.group_name}»
-                </span>
-                <span className="invites__actions">
-                  <button
-                    className="btn btn--primary"
-                    disabled={busy}
-                    onClick={() => act(() => api.acceptInvite(inv.id))}
-                  >
+      {state.invites.length > 0 ? (
+        <Section header="Тебя зовут">
+          {state.invites.map((inv) => (
+            <Cell
+              key={inv.id}
+              multiline
+              subtitle={`${inv.inviter} зовёт в «${inv.group_name}»`}
+              after={
+                <span className="row-actions">
+                  <Button size="s" disabled={busy} onClick={() => act(() => api.acceptInvite(inv.id))}>
                     Принять
-                  </button>
-                  <button disabled={busy} onClick={() => act(() => api.declineInvite(inv.id))}>
-                    Отказаться
-                  </button>
+                  </Button>
+                  <Button size="s" mode="plain" disabled={busy} onClick={() => act(() => api.declineInvite(inv.id))}>
+                    Нет
+                  </Button>
                 </span>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-
-      {state.invites.length === 0 && (
+              }
+            >
+              {inv.group_name}
+            </Cell>
+          ))}
+        </Section>
+      ) : (
         <Empty
           title="Ты пока не в группе"
           hint="Бюджет принадлежит группе: заведи свою или попроси администратора позвать тебя."
         />
       )}
 
-      <h2 className="screen__section">Своя группа</h2>
-      <label className="field">
-        <span className="field__label">Название</span>
-        <input
-          className="field__input"
+      <Section header="Своя группа">
+        <Input
+          header="Название"
+          placeholder="Дом"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="Дом"
         />
-      </label>
-      <button
-        className="btn btn--primary"
-        disabled={busy}
-        onClick={() => act(() => api.createGroup(name))}
-      >
-        Создать группу
-      </button>
-    </div>
+        <div className="sheet-actions">
+          <Button size="l" stretched loading={busy} onClick={() => act(() => api.createGroup(name))}>
+            Создать группу
+          </Button>
+        </div>
+      </Section>
+    </>
   );
 }

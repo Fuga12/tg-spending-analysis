@@ -1,10 +1,12 @@
 import { useMemo } from "react";
+import { Cell, Section } from "@telegram-apps/telegram-ui";
 import type { Category, Member, Tx } from "./api";
 import { dayLabel, money, todayFrom } from "./format";
 import { Who } from "./ui";
 
 /**
- * Список трат, сгруппированный по дням.
+ * Список трат, сгруппированный по дням: день — заголовок секции, трата —
+ * ячейка. Так это и выглядит в самом Telegram.
  *
  * Получателей строка называет поимённо, а не «на двоих»: при десяти
  * участниках относительная подпись бессмысленна, а «на всех» — это отдельный
@@ -29,8 +31,8 @@ export function TxList({
   const days = useMemo(() => {
     const out = new Map<string, Tx[]>();
     for (const tx of items) {
-      // День берётся в часовом поясе устройства: сервер отдаёт момент
-      // времени, а «какой это был день» человек читает по своим часам.
+      // День берётся по часам устройства: сервер отдаёт момент времени, а
+      // «какой это был день» человек читает по своим.
       const d = new Date(tx.spent_at);
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
         d.getDate(),
@@ -45,36 +47,40 @@ export function TxList({
   const today = todayFrom(days.map(([day]) => ({ day })));
 
   return (
-    <div className="list">
+    <>
       {days.map(([day, txs]) => (
-        <section key={day} className="day">
-          <h3 className="day__title">
-            <span>{dayLabel(day, today)}</span>
-            <b>{money(sum(txs))}</b>
-          </h3>
+        <Section key={day} header={`${dayLabel(day, today)} · ${money(sum(txs))}`}>
           {txs.map((tx) => (
-            <button key={tx.id} className="row" onClick={() => onPick(tx)}>
-              <Who member={byID.get(tx.payer)} slot={slots.get(tx.payer) ?? 10} />
-              <span className="row__main">
-                <span className="row__desc">{tx.description || "Без описания"}</span>
-                <span className="row__sub">
-                  {catByID.get(tx.category_id ?? -1)?.name ?? "Без категории"}
-                  {" · "}
-                  {recipientsLabel(tx, byID)}
-                  {tx.needs_review && <b className="row__flag"> · проверить</b>}
-                  {tx.pending && <b className="row__flag"> · категория позже</b>}
-                </span>
-              </span>
-              <span className={`row__amount${tx.kind !== "expense" ? " row__amount--other" : ""}`}>
-                {tx.kind === "income" ? "↑ " : tx.kind === "transfer" ? "↔ " : ""}
-                {money(tx.amount)}
-              </span>
-            </button>
+            <Cell
+              key={tx.id}
+              onClick={() => onPick(tx)}
+              before={<Who member={byID.get(tx.payer)} slot={slots.get(tx.payer) ?? 10} size={28} />}
+              subtitle={subtitle(tx, catByID, byID)}
+              after={<b className="amount">{amountLabel(tx)}</b>}
+            >
+              {tx.description || "Без описания"}
+            </Cell>
           ))}
-        </section>
+        </Section>
       ))}
-    </div>
+    </>
   );
+}
+
+function subtitle(
+  tx: Tx,
+  cats: Map<number, Category>,
+  members: Map<number, Member>,
+): string {
+  const parts = [cats.get(tx.category_id ?? -1)?.name ?? "Без категории", recipientsLabel(tx, members)];
+  if (tx.pending) parts.push("категория позже");
+  else if (tx.needs_review) parts.push("проверить");
+  return parts.join(" · ");
+}
+
+function amountLabel(tx: Tx): string {
+  const sign = tx.kind === "income" ? "↑ " : tx.kind === "transfer" ? "↔ " : "";
+  return sign + money(tx.amount);
 }
 
 /** Кому досталась трата — именами. Пустой список означает «на всех». */
@@ -97,7 +103,5 @@ function sum(items: Tx[]): string {
     const [whole, frac = ""] = tx.amount.split(".");
     cents += Number(whole) * 100 + Number(frac.padEnd(2, "0").slice(0, 2));
   }
-  const sign = cents < 0 ? "-" : "";
-  const abs = Math.abs(cents);
-  return `${sign}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, "0")}`;
+  return `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, "0")}`;
 }
