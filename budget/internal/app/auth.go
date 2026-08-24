@@ -136,3 +136,52 @@ func hmacSHA256(key []byte, data string) []byte {
 	mac.Write([]byte(data))
 	return mac.Sum(nil)
 }
+
+// DiagnoseSignature объясняет, почему подпись не сошлась.
+//
+// Только для лога и только при отказе: реализации расходятся в том, входит ли
+// поле signature в проверочную строку — Telegram добавил его позже основного
+// алгоритма, для сторонней проверки. Ошибиться тут легко, а снаружи разницы
+// не видно: и там, и там «подпись не сошлась».
+//
+// Функция ничего не пускает внутрь. Она перебирает варианты и говорит, какой
+// подошёл бы, чтобы догадку заменить измерением.
+func DiagnoseSignature(initData, botToken string) string {
+	values, err := url.ParseQuery(initData)
+	if err != nil {
+		return "initData не разбирается"
+	}
+	hash, err := hex.DecodeString(values.Get("hash"))
+	if err != nil {
+		return "hash не шестнадцатеричный"
+	}
+
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	secret := hmacSHA256([]byte("WebAppData"), botToken)
+	matched := "ни один из вариантов"
+	for _, v := range []struct {
+		name string
+		skip map[string]bool
+	}{
+		{"без hash и signature (как сейчас)", map[string]bool{"hash": true, "signature": true}},
+		{"без hash, signature внутри", map[string]bool{"hash": true}},
+	} {
+		var pairs []string
+		for _, k := range keys {
+			if v.skip[k] {
+				continue
+			}
+			pairs = append(pairs, k+"="+values[k][0])
+		}
+		if hmac.Equal(hmacSHA256(secret, strings.Join(pairs, "\n")), hash) {
+			matched = v.name
+			break
+		}
+	}
+	return "поля: [" + strings.Join(keys, " ") + "], сошлось бы: " + matched
+}

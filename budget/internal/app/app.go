@@ -93,7 +93,15 @@ func (s *Server) authenticate(next http.HandlerFunc) http.HandlerFunc {
 
 		tg, err := s.identify(r)
 		if err != nil {
-			s.log.Warn("не пустил в приложение", "err", err, "addr", r.RemoteAddr)
+			// При расхождении подписи в лог уезжает разбор: имена полей и то,
+			// какой вариант проверочной строки подошёл бы. Значений полей там
+			// нет — в user лежит имя человека, а в query_id пропуск в сессию.
+			if errors.Is(err, ErrBadSignature) {
+				s.log.Warn("не пустил в приложение", "err", err, "addr", r.RemoteAddr,
+					"разбор", DiagnoseSignature(initDataFrom(r), s.cfg.BotToken))
+			} else {
+				s.log.Warn("не пустил в приложение", "err", err, "addr", r.RemoteAddr)
+			}
 			fail(w, http.StatusUnauthorized, "Открой приложение из Telegram.")
 			return
 		}
