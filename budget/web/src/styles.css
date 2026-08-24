@@ -49,15 +49,55 @@
 
 /* --- общее ---------------------------------------------------------------- */
 
+/* Шрифт.
+   Библиотека задаёт --tgui--font-family, но применяет её только к своей
+   типографике. Всё остальное — графики, суммы, подписи осей — падало на
+   браузерный дефолт, а в вебвью Telegram это шрифт с засечками. Задаём его
+   на корне, чтобы наследовалось всем. */
+html,
 body {
   margin: 0;
   background: var(--tgui--secondary_bg_color);
+  font-family: var(
+    --tgui--font-family,
+    system-ui, -apple-system, "Roboto", "Helvetica Neue", Arial, sans-serif
+  );
+}
+
+/* Кнопки и поля шрифт не наследуют — им надо сказать отдельно. */
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
 }
 
 /* Место под таббар: без него последняя строка списка уезжает под него
-   и до неё не дотянуться. */
+   и до неё не дотянуться. Держать в согласии с --tabbar-height ниже. */
 .app {
-  padding-bottom: calc(80px + var(--tgui--safe_area_inset_bottom, 0px));
+  padding-bottom: calc(var(--tabbar-height) + 16px + var(--tgui--safe_area_inset_bottom, 0px));
+}
+
+/* --- нижняя панель --------------------------------------------------------
+
+   Библиотека рисует её компактной, под иконки. У нас вместо иконок слова, и
+   на такой высоте они жмутся к краю и плохо попадают пальцем: 44 пикселя —
+   это нижняя граница удобного нажатия, а не комфортная. */
+:root {
+  --tabbar-height: 64px;
+}
+
+.tabbar > * {
+  padding-bottom: var(--tgui--safe_area_inset_bottom, 0px);
+}
+
+.tabbar [class*="tgui-"] {
+  min-height: var(--tabbar-height);
+}
+
+.tabbar span,
+.tabbar div {
+  font-size: 14px;
 }
 
 /* Кнопки внутри секции: у Section свои отступы по краям, у кнопки — нет. */
@@ -259,3 +299,61 @@ body {
   cursor: pointer;
   text-align: left;
 }
+
+/* --- накопленный расход ---------------------------------------------------
+
+   Кривая растянута по ширине через preserveAspectRatio="none", поэтому
+   толщина линии задаётся non-scaling-stroke: иначе на широком экране она
+   расплывается, а на узком превращается в волос. */
+
+.trend {
+  padding: 12px 16px 4px;
+}
+
+.trend__svg {
+  display: block;
+  width: 100%;
+  height: 110px;
+  overflow: visible;
+}
+
+.trend__cur,
+.trend__prev {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.trend__cur { stroke: var(--tgui--link_color); }
+
+/* Прошлый месяц — фон, а не вторая равноправная серия: сравнивают с ним,
+   а смотрят на текущий. Отсюда и пунктир, и приглушённый цвет. */
+.trend__prev {
+  stroke: var(--tgui--hint_color);
+  stroke-dasharray: 4 4;
+  opacity: 0.7;
+}
+
+.trend__legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-top: 10px;
+  font-size: 13px;
+  color: var(--tgui--hint_color);
+}
+
+.trend__legend b { margin-left: auto; color: var(--tgui--text_color); }
+
+.trend__mark {
+  display: inline-block;
+  width: 12px;
+  height: 2px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.trend__mark--cur { background: var(--tgui--link_color); }
+.trend__mark--prev { background: var(--tgui--hint_color); }

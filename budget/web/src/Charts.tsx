@@ -66,8 +66,10 @@ export function MonthStrip({
  * на шаг, палец накрывает четыре сразу. График обзорный, числа есть в списке.
  */
 export function DayColumns({ days, today }: { days: DayPoint[]; today: string }) {
-  // Один-два столбика — это не график, а недоразумение.
-  if (days.filter((d) => num(d.amount) > 0).length < 3) return null;
+  // Пустой месяц графиком не нарисуешь, но одного дня уже достаточно: он
+  // отвечает на вопрос «когда именно». Раньше порог был в три дня, и в
+  // свежей группе не показывалось вообще ничего.
+  if (days.every((d) => num(d.amount) <= 0)) return null;
 
   const max = Math.max(...days.map((d) => num(d.amount)), 1);
   const peak = days.reduce((a, b) => (num(a.amount) >= num(b.amount) ? a : b));
@@ -214,3 +216,100 @@ export function CategoryBars({
     </Section>
   );
 }
+
+
+/**
+ * Накопленный расход: сколько потрачено с начала месяца ко дню N.
+ *
+ * Главный вопрос к тратам — не «сколько вышло», а «идём мы с опережением или
+ * нет». Столбики по дням на него не отвечают: глазами суммировать тридцать
+ * штук невозможно. Накопленная кривая рядом с прошлым месяцем отвечает сразу
+ * и показывает, в какой момент разошлось.
+ *
+ * Текущий месяц рисуется только до сегодня. Дотягивать линию до тридцать
+ * первого числа значило бы показывать, что расходы вдруг остановились.
+ */
+export function SpendingTrend({
+  current,
+  previous,
+  year,
+  month,
+  today,
+}: {
+  current: DayPoint[];
+  previous: DayPoint[];
+  year: number;
+  month: number;
+  today: string;
+}) {
+  const [ty, tm, td] = today.split("-").map(Number);
+  const inThisMonth = ty === year && tm === month;
+  const lastDay = daysInMonth(year, month);
+  const upto = inThisMonth ? Math.min(td, lastDay) : lastDay;
+
+  const cur = cumulative(current, upto);
+  const prev = cumulative(previous, daysInMonth(month === 1 ? year - 1 : year, month === 1 ? 12 : month - 1));
+
+  if (cur.length === 0 || cur[cur.length - 1] === 0) return null;
+
+  const max = Math.max(...cur, ...prev, 1);
+  const W = 320;
+  const H = 110;
+
+  // Обе кривые на одной шкале дней: сравнивать 15-е с 15-м, а не долю месяца
+  // с долей — в феврале она означала бы другой день.
+  const scale = Math.max(lastDay, prev.length, 1);
+  const path = (values: number[]) =>
+    values
+      .map((v, i) => {
+        const x = (i / Math.max(scale - 1, 1)) * W;
+        const y = H - (v / max) * H;
+        return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(" ");
+
+  const diff = prev.length > 0 ? cur[cur.length - 1] - (prev[Math.min(upto, prev.length) - 1] ?? 0) : 0;
+
+  return (
+    <Section
+      header="Накопленный расход"
+      footer={
+        prev.length === 0
+          ? "За прошлый месяц данных нет — сравнивать не с чем."
+          : diff === 0
+            ? "К этому дню — ровно как в прошлом месяце."
+            : `К этому дню ${diff > 0 ? "больше" : "меньше"} прошлого месяца на ${money(String(Math.abs(Math.round(diff))))}`
+      }
+    >
+      <div className="trend">
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="trend__svg">
+          {prev.length > 0 && <path className="trend__prev" d={path(prev)} />}
+          <path className="trend__cur" d={path(cur)} />
+        </svg>
+        <div className="trend__legend">
+          <span><i className="trend__mark trend__mark--cur" />этот месяц</span>
+          {prev.length > 0 && (
+            <span><i className="trend__mark trend__mark--prev" />прошлый</span>
+          )}
+          <b className="amount">{money(String(Math.round(cur[cur.length - 1])))}</b>
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+/** Нарастающий итог по дням месяца: день без трат продолжает линию, а не
+ *  роняет её в ноль. */
+function cumulative(days: DayPoint[], upto: number): number[] {
+  if (upto <= 0) return [];
+  const byDay = new Map(days.map((d) => [Number(d.day.slice(8)), num(d.amount)]));
+  const out: number[] = [];
+  let sum = 0;
+  for (let d = 1; d <= upto; d++) {
+    sum += byDay.get(d) ?? 0;
+    out.push(sum);
+  }
+  return out.some((v) => v > 0) ? out : [];
+}
+
+const daysInMonth = (year: number, month: number) => new Date(year, month, 0).getDate();

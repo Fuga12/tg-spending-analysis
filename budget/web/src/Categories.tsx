@@ -26,7 +26,7 @@ export function Categories({
     <>
       <Section
         header="Категории"
-        footer="Подсказка уезжает боту вместе с сообщением и помогает ему разбирать траты точнее."
+        footer="Бот раскладывает траты по этим категориям. Открой любую, чтобы объяснить ему, что к ней относится."
       >
         {categories.map((c) => (
           <Cell
@@ -35,7 +35,7 @@ export function Categories({
             subtitle={c.hint || undefined}
             description={
               c.default_to !== null
-                ? `по умолчанию — ${byID.get(c.default_to)?.name ?? "кому-то"}`
+                ? `записывается на: ${byID.get(c.default_to)?.name ?? "кого-то"}`
                 : undefined
             }
             onClick={() => setEditing(c)}
@@ -108,21 +108,26 @@ function CategorySheet({
 
       <Section>
         <Input header="Название" value={name} onChange={(e) => setName(e.target.value)} />
+      </Section>
+
+      <Section
+        header="Что сюда относится"
+        footer="Список слов через запятую. Он уходит боту вместе с сообщением: так он поймёт, что «шаурма» — это еда, а не хозтовары. Можно оставить пустым."
+      >
         <Input
-          header="Подсказка боту"
-          placeholder="пиво, вино, крепкое"
+          placeholder="пиво, вино, коктейли"
           value={hint}
           onChange={(e) => setHint(e.target.value)}
         />
       </Section>
 
       <Section
-        header="Кому по умолчанию"
-        footer="«Косметика — Уле» верно и когда платит не Уля. Без адресата трата уходит тому, кто её записал."
+        header="На кого записывать такие траты"
+        footer="Когда в сообщении не сказано, кому трата, бот запишет её на этого человека. Удобно для того, что всегда покупают одному и тому же — кто бы ни платил."
       >
         <div className="chips">
           <Chip mode={defaultTo === null ? "elevated" : "outline"} onClick={() => setDefaultTo(null)}>
-            Тому, кто платил
+            На того, кто заплатил
           </Chip>
           {members
             .filter((m) => !m.left)
@@ -138,7 +143,7 @@ function CategorySheet({
         </div>
       </Section>
 
-      <Section footer="После правки категорий бот забывает свои прежние догадки — но не то, что вы поправили руками.">
+      <Section footer="После правки бот забудет свои прежние догадки и разберёт следующие траты заново. Ваши ручные исправления останутся.">
         <div className="sheet-actions">
           <Button size="l" stretched loading={busy} onClick={save}>
             Сохранить

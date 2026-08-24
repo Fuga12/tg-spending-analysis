@@ -12,7 +12,7 @@ import {
   type TxFilter,
 } from "./api";
 import { Categories } from "./Categories";
-import { CategoryBars, DayColumns, MonthStrip, StackedBar } from "./Charts";
+import { CategoryBars, DayColumns, MonthStrip, SpendingTrend, StackedBar } from "./Charts";
 import { GroupScreen, NoGroupScreen } from "./GroupScreen";
 import { money, monthName, plural } from "./format";
 import { slotClass, slotsFor } from "./slots";
@@ -39,6 +39,9 @@ export default function App() {
 
   const [report, setReport] = useState<MonthReport | null>(null);
   const [days, setDays] = useState<DayPoint[]>([]);
+  // Дни прошлого месяца нужны накопительной кривой: без второй линии она
+  // показывает сумму, но не отвечает на вопрос «это много или как обычно».
+  const [prevDays, setPrevDays] = useState<DayPoint[]>([]);
   const [months, setMonths] = useState<MonthPoint[]>([]);
 
   const [filter, setFilter] = useState<TxFilter>({});
@@ -69,14 +72,21 @@ export default function App() {
   // неё месяц не переключить.
   useEffect(() => {
     if (!inGroup) return;
+    const prev =
+      period.month === 1
+        ? { year: period.year - 1, month: 12 }
+        : { year: period.year, month: period.month - 1 };
+
     Promise.all([
       api.month(period.year, period.month),
       api.days(period.year, period.month),
+      api.days(prev.year, prev.month),
       api.months(),
     ])
-      .then(([m, d, ms]) => {
+      .then(([m, d, pd, ms]) => {
         setReport(m);
         setDays(d);
+        setPrevDays(pd);
         setMonths(ms);
       })
       .catch((e) => setError(e instanceof ApiError ? e.message : "Не смог посчитать отчёт."));
@@ -155,6 +165,14 @@ export default function App() {
               </Section>
             )}
 
+            <SpendingTrend
+              current={days}
+              previous={prevDays}
+              year={period.year}
+              month={period.month}
+              today={todayISO()}
+            />
+
             <DayColumns days={days} today={todayISO()} />
 
             <StackedBar
@@ -223,11 +241,15 @@ export default function App() {
         )}
       </List>
 
-      <Tabbar>
-        {TABS.map(([id, label]) => (
-          <Tabbar.Item key={id} text={label} selected={tab === id} onClick={() => setTab(id)} />
-        ))}
-      </Tabbar>
+      {/* Обёртка нужна, чтобы дотянуться до высоты панели: классы библиотеки
+          захешированы, и целиться в них по имени нельзя. */}
+      <div className="tabbar">
+        <Tabbar>
+          {TABS.map(([id, label]) => (
+            <Tabbar.Item key={id} text={label} selected={tab === id} onClick={() => setTab(id)} />
+          ))}
+        </Tabbar>
+      </div>
 
       {editing && (
         <TxEdit
