@@ -5,6 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark light" />
     <title>Бюджет</title>
+    <!--
+      SDK Telegram. Без него window.Telegram не существует, initData пустой,
+      заголовок Authorization не уходит — и сервер честно отвечает «открой
+      приложение из Telegram» на собственное же приложение.
+
+      Обычный синхронный тег, а не type="module" и не defer: модули
+      откладываются до разбора документа, и main.tsx обязан увидеть SDK уже
+      готовым. Грузится с telegram.org — своей копии у Telegram не
+      предусмотрено, версия обновляется на их стороне.
+    -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
     <div id="root"></div>
