@@ -10,13 +10,17 @@
       заголовок Authorization не уходит — и сервер честно отвечает «открой
       приложение из Telegram» на собственное же приложение.
 
-      Обычный синхронный тег, а не type="module" и не defer: модули
-      откладываются до разбора документа, и main.tsx обязан увидеть SDK уже
-      готовым. Грузится с telegram.org — своей копии у Telegram не
-      предусмотрено, версия обновляется на их стороне.
+      defer, а не синхронный тег: скрипт едет с telegram.org, и синхронный
+      блокировал бы отрисовку до его загрузки — на медленной сети это белый
+      экран вместо приложения. Порядок при этом сохраняется: отложенные и
+      модульные скрипты выполняются в порядке документа, так что main.tsx
+      увидит SDK готовым.
+
+      Если скрипт всё же не доедет, приложение не сломается: подпись лежит
+      ещё и в адресе страницы, см. initData() в api.ts.
     -->
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script type="module" crossorigin src="/assets/index-D_Ep6Qfe.js"></script>
+    <script defer src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script type="module" crossorigin src="/assets/index-DdiNe2Jr.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-C_x_Jh4q.css">
   </head>
   <body>

@@ -91,14 +91,41 @@ type Telegram = {
   showConfirm?: (message: string, cb: (ok: boolean) => void) => void;
 };
 
-/** Telegram кладёт себя в window до загрузки скриптов приложения. */
+/** SDK Telegram, если он загрузился. */
 export const tg: Telegram | undefined = (window as any).Telegram?.WebApp;
 
+/**
+ * Подпись Telegram: сначала из SDK, при его отсутствии — из адреса страницы.
+ *
+ * Второй путь не «на всякий случай». SDK грузится с telegram.org, и причин
+ * не доехать у него хватает: медленная сеть, блокировка, кэш вебвью со старой
+ * версией страницы. Тогда window.Telegram не появляется вовсе — а подпись всё
+ * это время лежит в адресе: Telegram дописывает её в hash при открытии
+ * Mini App (#tgWebAppData=…). Полагаться только на скрипт значит поставить
+ * единственную дверь в зависимость от чужого CDN.
+ *
+ * URLSearchParams декодирует значение один раз — ровно до того вида, в каком
+ * его подписали.
+ */
+export function initData(): string {
+  if (tg?.initData) return tg.initData;
+  const hash = window.location.hash.replace(/^#/, "");
+  return hash ? (new URLSearchParams(hash).get("tgWebAppData") ?? "") : "";
+}
+
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = {};
-  // Подпись едет заголовком, а не параметром адреса: в адресе она осела бы
-  // в логах прокси и в истории браузера.
-  if (tg?.initData) headers.Authorization = `tma ${tg.initData}`;
+  const signature = initData();
+  if (!signature) {
+    // Ходить в сеть незачем: сервер ответит 401, а сказать человеку надо
+    // не «открой из Telegram» — он оттуда и открыл, — а что подписи нет.
+    throw new ApiError(0, "Приложение открыто без подписи Telegram. Закрой его и открой заново из бота.");
+  }
+
+  const headers: Record<string, string> = {
+    // Подпись едет заголовком, а не параметром адреса: в адресе она осела бы
+    // в логах прокси и в истории браузера.
+    Authorization: `tma ${signature}`,
+  };
   if (body !== undefined) headers["Content-Type"] = "application/json";
 
   const res = await fetch(path, {
@@ -151,7 +178,8 @@ export const api = {
   clearAvatar: () => call<void>("DELETE", "/api/me/avatar"),
   setAvatar: async (blob: Blob) => {
     const headers: Record<string, string> = { "Content-Type": "image/jpeg" };
-    if (tg?.initData) headers.Authorization = `tma ${tg.initData}`;
+    const signature = initData();
+    if (signature) headers.Authorization = `tma ${signature}`;
     const res = await fetch("/api/me/avatar", { method: "POST", headers, body: blob });
     if (!res.ok) throw new ApiError(res.status, "Не смог сохранить фото.");
     return (await res.json()) as { avatar_at: string };
