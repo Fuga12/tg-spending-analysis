@@ -1,6 +1,26 @@
 package storage
 
-import "context"
+import (
+	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+// ErrCategoryExists — в группе уже есть категория с таким названием.
+var ErrCategoryExists = errors.New("категория с таким названием уже есть")
+
+// uniqueName переводит нарушение unique (group_id, name) в понятную ошибку.
+//
+// Без этого перевода конфликт имён доезжал до человека как «База не отвечает,
+// попробуй ещё раз» — совет, который не может сработать ни на какой попытке.
+func uniqueName(err error) error {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) && pg.Code == "23505" && pg.ConstraintName == "categories_group_id_name_key" {
+		return ErrCategoryExists
+	}
+	return err
+}
 
 // Category — строка таблицы categories. Список свой у каждой группы:
 // раскатывается из шаблона при создании и дальше правится людьми.
@@ -18,9 +38,22 @@ type Category struct {
 	// шаблона, а не на category_id конкретной группы.
 	TemplateKey string
 
-	// DefaultMemberID — адресат-человек, если он у категории есть: «Косметика —
-	// Уле» верно и когда платит не Уля. Nil означает «на всю группу».
-	DefaultMemberID *int64
+	// Default — на кого записывать трату, о получателе которой в сообщении не
+	// сказано.
+	Default CategoryDefault
+}
+
+// CategoryDefault — умолчание категории по получателю.
+//
+// Три состояния, а не два: человек, вся группа и — когда не задано ничего —
+// тот, кто заплатил. Держатся вместе одним значением, потому что выбор один:
+// «общее и при этом на Улю» не бывает, и в базе эта пара закрыта check-ом.
+type CategoryDefault struct {
+	// MemberID — адресат-человек: «Косметика — Уле» верно и когда платит не Уля.
+	MemberID *int64
+
+	// Common — трата общая, на всю группу.
+	Common bool
 }
 
 // TemplateOther — ключ шаблона для категории, куда падает всё, что не
@@ -49,7 +82,8 @@ const (
 // Categories возвращает категории группы в порядке отображения.
 func (g *GroupStore) Categories(ctx context.Context) ([]Category, error) {
 	rows, err := g.pool.Query(ctx, `
-		select id, name, sort_order, hint, coalesce(template_key, ''), default_member_id
+		select id, name, sort_order, hint, coalesce(template_key, ''),
+		       default_member_id, default_common
 		from categories where group_id = $1
 		order by sort_order, id`, g.groupID)
 	if err != nil {
@@ -61,7 +95,7 @@ func (g *GroupStore) Categories(ctx context.Context) ([]Category, error) {
 	for rows.Next() {
 		var c Category
 		if err := rows.Scan(&c.ID, &c.Name, &c.SortOrder, &c.Hint,
-			&c.TemplateKey, &c.DefaultMemberID); err != nil {
+			&c.TemplateKey, &c.Default.MemberID, &c.Default.Common); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -151,25 +185,38 @@ const MaxCategoryNameLen = 64
 //
 // template_key у неё пуст: слов в общей затравке для неё нет и быть не может,
 // а выдуманный ключ засорял бы пространство имён, общее для всех групп.
-func (g *GroupStore) CreateCategory(ctx context.Context, name, hint string, memberID *int64) (Category, error) {
-	c := Category{Name: trimTo(name, MaxCategoryNameLen), Hint: hint, DefaultMemberID: memberID}
+func (g *GroupStore) CreateCategory(ctx context.Context, name, hint string, def CategoryDefault) (Category, error) {
+	c := Category{Name: trimTo(name, MaxCategoryNameLen), Hint: hint, Default: def.settled()}
 	err := g.pool.QueryRow(ctx, `
-		insert into categories (group_id, name, hint, default_member_id, sort_order)
-		values ($1, $2, $3, $4,
+		insert into categories (group_id, name, hint, default_member_id, default_common, sort_order)
+		values ($1, $2, $3, $4, $5,
 		        (select coalesce(max(sort_order), 0) + 10 from categories where group_id = $1))
-		returning id, sort_order`, g.groupID, c.Name, hint, memberID).
+		returning id, sort_order`,
+		g.groupID, c.Name, hint, c.Default.MemberID, c.Default.Common).
 		Scan(&c.ID, &c.SortOrder)
-	return c, err
+	return c, uniqueName(err)
+}
+
+// settled приводит умолчание к тому виду, который примет база: «на всю группу»
+// перебивает адресата. Разойтись эти два поля могут только по ошибке
+// вызывающего, и упасть на check-е базы здесь было бы честнее — но ценой
+// пятисотки на ровном месте, поэтому выбор просто досчитывается до одного.
+func (d CategoryDefault) settled() CategoryDefault {
+	if d.Common {
+		return CategoryDefault{Common: true}
+	}
+	return d
 }
 
 // UpdateCategory правит имя, подсказку и адресата по умолчанию.
-func (g *GroupStore) UpdateCategory(ctx context.Context, id int32, name, hint string, memberID *int64) (bool, error) {
+func (g *GroupStore) UpdateCategory(ctx context.Context, id int32, name, hint string, def CategoryDefault) (bool, error) {
+	def = def.settled()
 	tag, err := g.pool.Exec(ctx, `
-		update categories set name = $3, hint = $4, default_member_id = $5
+		update categories set name = $3, hint = $4, default_member_id = $5, default_common = $6
 		where id = $2 and group_id = $1`,
-		g.groupID, id, trimTo(name, MaxCategoryNameLen), hint, memberID)
+		g.groupID, id, trimTo(name, MaxCategoryNameLen), hint, def.MemberID, def.Common)
 	if err != nil {
-		return false, err
+		return false, uniqueName(err)
 	}
 	return tag.RowsAffected() > 0, nil
 }

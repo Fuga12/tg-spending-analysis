@@ -10,12 +10,16 @@ export type Member = {
   avatar_at?: string;
 };
 
+/** На кого записывать трату, о получателе которой в сообщении не сказано:
+ *  участник, "common" — вся группа, null — тот, кто заплатил. */
+export type DefaultTo = number | "common" | null;
+
 export type Category = {
   id: number;
   name: string;
   hint: string;
   template_key?: string;
-  default_to: number | null;
+  default_to: DefaultTo;
   sort_order: number;
 };
 
@@ -206,9 +210,9 @@ export const api = {
   deleteTx: (id: number) => call<void>("DELETE", `/api/transactions/${id}`),
   restoreTx: (id: number) => call<Tx>("POST", `/api/transactions/${id}/restore`),
 
-  createCategory: (name: string, hint: string, defaultTo: number | null) =>
+  createCategory: (name: string, hint: string, defaultTo: DefaultTo) =>
     call<Category>("POST", "/api/categories", { name, hint, default_to: defaultTo }),
-  updateCategory: (id: number, name: string, hint: string, defaultTo: number | null) =>
+  updateCategory: (id: number, name: string, hint: string, defaultTo: DefaultTo) =>
     call<void>("PATCH", `/api/categories/${id}`, { name, hint, default_to: defaultTo }),
 
   month: (year: number, month: number) =>

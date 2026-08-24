@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Button, Cell, Chip, Input, Section } from "@telegram-apps/telegram-ui";
-import { ApiError, api, type Category, type Member } from "./api";
+import { ApiError, api, type Category, type DefaultTo, type Member } from "./api";
 import { ErrorBar, Sheet } from "./ui";
 
 /**
@@ -33,11 +33,7 @@ export function Categories({
             key={c.id}
             multiline
             subtitle={c.hint || undefined}
-            description={
-              c.default_to !== null
-                ? `записывается на: ${byID.get(c.default_to)?.name ?? "кого-то"}`
-                : undefined
-            }
+            description={describeDefault(c.default_to, byID)}
             onClick={() => setEditing(c)}
           >
             {c.name}
@@ -68,6 +64,15 @@ export function Categories({
   );
 }
 
+/** Подпись под названием категории в списке. У «на того, кто заплатил»
+ *  подписи нет: это умолчание, и писать его у каждой строки значит
+ *  утопить в нём те две-три, которые настроены иначе. */
+function describeDefault(d: DefaultTo, byID: Map<number, Member>): string | undefined {
+  if (d === "common") return "записывается на всю группу";
+  if (d === null) return undefined;
+  return `записывается на: ${byID.get(d)?.name ?? "кого-то"}`;
+}
+
 function CategorySheet({
   category,
   members,
@@ -81,7 +86,7 @@ function CategorySheet({
 }) {
   const [name, setName] = useState(category?.name ?? "");
   const [hint, setHint] = useState(category?.hint ?? "");
-  const [defaultTo, setDefaultTo] = useState<number | null>(category?.default_to ?? null);
+  const [defaultTo, setDefaultTo] = useState<DefaultTo>(category?.default_to ?? null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -123,11 +128,17 @@ function CategorySheet({
 
       <Section
         header="На кого записывать такие траты"
-        footer="Когда в сообщении не сказано, кому трата, бот запишет её на этого человека. Удобно для того, что всегда покупают одному и тому же — кто бы ни платил."
+        footer="Так бот поступит, когда в сообщении не сказано, кому трата. «На всю группу» — для общего: продукты, дом, коммуналка. Имя — для того, что всегда покупают одному и тому же, кто бы ни платил."
       >
         <div className="chips">
           <Chip mode={defaultTo === null ? "elevated" : "outline"} onClick={() => setDefaultTo(null)}>
             На того, кто заплатил
+          </Chip>
+          <Chip
+            mode={defaultTo === "common" ? "elevated" : "outline"}
+            onClick={() => setDefaultTo("common")}
+          >
+            На всю группу
           </Chip>
           {members
             .filter((m) => !m.left)

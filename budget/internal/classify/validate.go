@@ -143,14 +143,19 @@ func recipients(r RawItem, req Request, cat *storage.Category, log *slog.Logger)
 
 // defaultRecipients — на кого уходит трата, о получателе которой не сказано.
 //
-// Адресат категории, если он задан: «Косметика — Уле» верно и когда платит не
-// Уля. Иначе плательщик: записать трату на всю группу значит утверждать то,
-// чего никто не говорил, а «Общее» в отчёте стоит отдельной строкой и деньги
-// в ней уже никому не приписаны.
+// Умолчание категории, если оно задано: «Косметика — Уле» верно и когда платит
+// не Уля, «Продукты — на всех» верно и когда в сообщении одно слово с суммой.
+// Иначе плательщик: назвать трату общей самим значит утверждать то, чего никто
+// не говорил, — а «Общее» в отчёте стоит отдельной строкой, и деньги в ней уже
+// никому не приписаны. Это рассуждение против догадки, а не против настройки:
+// человек, поставивший «на всю группу», как раз это и сказал.
 func defaultRecipients(req Request, cat *storage.Category) []int64 {
+	if cat != nil && cat.Default.Common {
+		return nil
+	}
 	// Адресат категории мог выйти из группы — тогда умолчание не действует.
-	if cat != nil && cat.DefaultMemberID != nil && req.Roster.Has(*cat.DefaultMemberID) {
-		return []int64{*cat.DefaultMemberID}
+	if cat != nil && cat.Default.MemberID != nil && req.Roster.Has(*cat.Default.MemberID) {
+		return []int64{*cat.Default.MemberID}
 	}
 	if req.Payer.ID == 0 {
 		return nil

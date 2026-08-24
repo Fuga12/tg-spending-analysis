@@ -1,6 +1,8 @@
 package app
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -50,12 +52,55 @@ type memberJSON struct {
 }
 
 type categJSON struct {
-	ID          int32  `json:"id"`
-	Name        string `json:"name"`
-	Hint        string `json:"hint"`
-	TemplateKey string `json:"template_key,omitempty"`
-	DefaultTo   *int64 `json:"default_to"`
-	SortOrder   int    `json:"sort_order"`
+	ID          int32     `json:"id"`
+	Name        string    `json:"name"`
+	Hint        string    `json:"hint"`
+	TemplateKey string    `json:"template_key,omitempty"`
+	DefaultTo   defaultTo `json:"default_to"`
+	SortOrder   int       `json:"sort_order"`
+}
+
+// defaultTo — умолчание категории по получателю в JSON: id участника,
+// "common" — на всю группу, null — на того, кто заплатил.
+//
+// Три состояния одним полем, а не числом и флагом рядом: в приложении это один
+// выбор из ряда, и разложи мы его на два поля — появилось бы «общее и при этом
+// на Улю», состояние, которого не бывает, но которое пришлось бы разбирать на
+// обоих концах. Строка "common" здесь та же, что в фильтре списка трат
+// (?recipient=common): одно понятие называется в API одним словом.
+type defaultTo storage.CategoryDefault
+
+const commonJSON = `"common"`
+
+func (d defaultTo) MarshalJSON() ([]byte, error) {
+	switch {
+	case d.Common:
+		return []byte(commonJSON), nil
+	case d.MemberID != nil:
+		return strconv.AppendInt(nil, *d.MemberID, 10), nil
+	default:
+		return []byte("null"), nil
+	}
+}
+
+func (d *defaultTo) UnmarshalJSON(b []byte) error {
+	switch s := string(bytes.TrimSpace(b)); s {
+	case "null":
+		*d = defaultTo{}
+		return nil
+	case commonJSON:
+		*d = defaultTo{Common: true}
+		return nil
+	}
+	var id int64
+	if err := json.Unmarshal(b, &id); err != nil {
+		// Текст уходит человеку: decode отвечает им же. Молча считать
+		// непонятное значение за null нельзя — «на всю группу» превратилось бы
+		// в «на плательщика» без единого следа.
+		return errors.New(`поле default_to: ожидалось число, "common" или null`)
+	}
+	*d = defaultTo{MemberID: &id}
+	return nil
 }
 
 type inviteJSON struct {
@@ -329,9 +374,9 @@ func (s *Server) declineInvite(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createCategory(w http.ResponseWriter, r *http.Request) {
 	inGroup(s, w, r, func(c *caller) {
 		var body struct {
-			Name      string `json:"name"`
-			Hint      string `json:"hint"`
-			DefaultTo *int64 `json:"default_to"`
+			Name      string    `json:"name"`
+			Hint      string    `json:"hint"`
+			DefaultTo defaultTo `json:"default_to"`
 		}
 		if !decode(w, r, &body) {
 			return
@@ -340,7 +385,11 @@ func (s *Server) createCategory(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusBadRequest, "У категории должно быть название.")
 			return
 		}
-		cat, err := c.group.CreateCategory(r.Context(), body.Name, body.Hint, body.DefaultTo)
+		cat, err := c.group.CreateCategory(r.Context(), body.Name, body.Hint, storage.CategoryDefault(body.DefaultTo))
+		if errors.Is(err, storage.ErrCategoryExists) {
+			fail(w, http.StatusConflict, "Категория с таким названием уже есть.")
+			return
+		}
 		if err != nil {
 			s.oops(w, "создание категории", err)
 			return
@@ -357,14 +406,18 @@ func (s *Server) updateCategory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var body struct {
-			Name      string `json:"name"`
-			Hint      string `json:"hint"`
-			DefaultTo *int64 `json:"default_to"`
+			Name      string    `json:"name"`
+			Hint      string    `json:"hint"`
+			DefaultTo defaultTo `json:"default_to"`
 		}
 		if !decode(w, r, &body) {
 			return
 		}
-		changed, err := c.group.UpdateCategory(r.Context(), int32(id), body.Name, body.Hint, body.DefaultTo)
+		changed, err := c.group.UpdateCategory(r.Context(), int32(id), body.Name, body.Hint, storage.CategoryDefault(body.DefaultTo))
+		if errors.Is(err, storage.ErrCategoryExists) {
+			fail(w, http.StatusConflict, "Категория с таким названием уже есть.")
+			return
+		}
 		if err != nil {
 			s.oops(w, "правка категории", err)
 			return
@@ -467,7 +520,7 @@ func toMember(m storage.Member, avatarAt *time.Time) memberJSON {
 func toCategory(c storage.Category) categJSON {
 	return categJSON{
 		ID: c.ID, Name: c.Name, Hint: c.Hint,
-		TemplateKey: c.TemplateKey, DefaultTo: c.DefaultMemberID, SortOrder: c.SortOrder,
+		TemplateKey: c.TemplateKey, DefaultTo: defaultTo(c.Default), SortOrder: c.SortOrder,
 	}
 }
 
