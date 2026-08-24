@@ -61,6 +61,35 @@ export function MonthStrip({
   );
 }
 
+/**
+ * Полный календарь месяца: день без трат — ноль, а не пропуск.
+ *
+ * Сервер отдаёт только дни, в которые что-то потратили, и как ответ на вопрос
+ * «сколько потрачено» это верно. Но столбики — календарь, и пропущенный день
+ * здесь не просто исчезает: он сдвигает все следующие. Единственная трата в
+ * месяце превращалась в столбик во всю ширину, стоящий разом напротив всех
+ * чисел на оси.
+ */
+function calendar(days: DayPoint[], year: number, month: number): DayPoint[] {
+  const known = new Map(days.map((d) => [d.day, d]));
+  // Нулевое число следующего месяца — последнее число текущего.
+  const total = new Date(year, month, 0).getDate();
+  const prefix = `${year}-${String(month).padStart(2, "0")}-`;
+
+  return Array.from({ length: total }, (_, i) => {
+    const day = prefix + String(i + 1).padStart(2, "0");
+    return known.get(day) ?? { day, amount: "0", by: {} };
+  });
+}
+
+/** Числа на оси: начала недель и последнее число месяца. Последнее — из длины
+ *  месяца, а не «29» на все случаи: в феврале такого дня нет вовсе, а в
+ *  январе он не край. Марку, вплотную подошедшую к последнему числу, убираем —
+ *  «30 31» слиплось бы в пятно. */
+function axisDays(total: number): number[] {
+  return [...[1, 8, 15, 22].filter((d) => d <= total - 3), total];
+}
+
 /** Сколько категорий показывать цветом. Дальше глаз не различает, и
  *  остальное честнее свести в одну серую долю, чем красить в седьмой оттенок. */
 const TOP_DAY_CATEGORIES = 5;
@@ -79,23 +108,29 @@ const TOP_DAY_CATEGORIES = 5;
 export function DayCategories({
   days,
   categories,
+  year,
+  month,
   today,
   onPick,
 }: {
   days: DayPoint[];
   categories: Line[];
+  year: number;
+  month: number;
   today: string;
   onPick?: (categoryID: number) => void;
 }) {
   if (days.every((d) => num(d.amount) <= 0)) return null;
+
+  const series = calendar(days, year, month);
 
   // Порядок берётся из месячного отчёта: он уже отсортирован по убыванию,
   // и цвет категории не скачет от дня к дню.
   const top = categories.filter((c) => c.id !== 0).slice(0, TOP_DAY_CATEGORIES);
   const colorOf = new Map(top.map((c, i) => [String(c.id), `cat-${i + 1}`]));
 
-  const max = Math.max(...days.map((d) => num(d.amount)), 1);
-  const peak = days.reduce((a, b) => (num(a.amount) >= num(b.amount) ? a : b));
+  const max = Math.max(...series.map((d) => num(d.amount)), 1);
+  const peak = series.reduce((a, b) => (num(a.amount) >= num(b.amount) ? a : b));
   const hasRest = categories.some((c) => !colorOf.has(String(c.id)));
 
   return (
@@ -108,7 +143,7 @@ export function DayCategories({
       }
     >
       <div className="days">
-        {days.map((d) => (
+        {series.map((d) => (
           <span
             key={d.day}
             className={`days__col${d.day === today ? " days__col--today" : ""}`}
@@ -133,9 +168,16 @@ export function DayCategories({
           </span>
         ))}
       </div>
-      <div className="days__axis">
-        {[1, 8, 15, 22, 29].map((d) => (
-          <span key={d}>{d}</span>
+      {/* Ось — та же сетка, что и столбики: число обязано стоять ровно над
+          своим днём, иначе оно указывает на соседний. */}
+      <div
+        className="days__axis"
+        style={{ gridTemplateColumns: `repeat(${series.length}, minmax(0, 1fr))` }}
+      >
+        {axisDays(series.length).map((d) => (
+          <span key={d} style={{ gridColumn: d }}>
+            {d}
+          </span>
         ))}
       </div>
 

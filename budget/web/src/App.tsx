@@ -185,6 +185,8 @@ export default function App() {
             <DayCategories
               days={days}
               categories={report.categories}
+              year={period.year}
+              month={period.month}
               today={todayISO()}
               onPick={(id) => drillTo({ category: id })}
             />
