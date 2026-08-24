@@ -1,725 +1,296 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, BeneficiaryGroup, Category, DayPoint, Line, Me, MonthPoint, MonthReport, Tx, Unauthorized } from "./api";
-import Sheet from "./Sheet";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  ApiError,
+  api,
+  tg,
+  type DayPoint,
+  type MonthPoint,
+  type MonthReport,
+  type State,
+  type Tx,
+  type TxFilter,
+} from "./api";
+import { Categories } from "./Categories";
 import { CategoryBars, DayColumns, MonthStrip, StackedBar } from "./Charts";
-import Categories from "./Categories";
-import Avatar from "./Avatar";
-import Photo from "./Photo";
-import Groups from "./Groups";
-import { beneficiaryLabel, dayLabel, money, monthName, plural, todayFrom } from "./format";
+import { GroupScreen, NoGroupScreen } from "./GroupScreen";
+import { money, monthName, plural } from "./format";
+import { slotClass, slotsFor } from "./slots";
+import { TxEdit } from "./TxEdit";
+import { TxList } from "./TxList";
+import { Empty, ErrorBar } from "./ui";
 
-const PAGE = 200;
-
-const MONTHS_IN = [
-  "январе", "феврале", "марте", "апреле", "мае", "июне",
-  "июле", "августе", "сентябре", "октябре", "ноябре", "декабре",
-];
-
-const monthOf = (month: number) => MONTHS_IN[month - 1];
-
-/** Полоса месяцев: шесть завершённых плюс текущий — но только если его там
- *  ещё нет, иначе в прошлом месяце подпись дублируется. */
-function stripPoints(months: MonthPoint[], route: Route, total: string): MonthPoint[] {
-  const now = new Date();
-  const current = { year: now.getFullYear(), month: now.getMonth() + 1 };
-  const has = months.some((m) => m.year === current.year && m.month === current.month);
-  const amount = route.year === current.year && route.month === current.month ? total : "0";
-  return has ? months : [...months, { ...current, amount }];
-}
-
-/** Дельты категорий приходят с сервера строками: считать их на клиенте
- *  значит повторить фильтрацию расходов и разойтись с ботом. */
-function deltasOf(lines: Line[]): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const l of lines) {
-    if (l.delta !== undefined) out.set(l.name, Number(l.delta));
-  }
-  return out;
-}
-
-/** Цвет закреплён за человеком: смотрящий — первый слот, партнёр — второй,
- *  общие корзины — третий. Не по порядку в базе: иначе у двоих будут разные
- *  цвета у одних и тех же людей (webapp-design.md §3.6). */
-/** Метка фото человека. Уезжает в URL картинки: без неё браузер после замены
- *  фото полсуток показывает из кэша старое. */
-function photoOf(id: number, me: Me | null): string {
-  if (!me) return "";
-  if (id === me.id) return me.avatar_version;
-  return me.partner?.id === id ? me.partner.avatar_version : "";
-}
-
-function slotOf(line: Line, me: Me | null): number {
-	if (line.key.startsWith("group:")) return 3;
-	if (line.id === 0) return 3;
-  if (me && line.id === me.id) return 1;
-  return 2;
-}
-
-/** Дата новой записи: в открытом прошлом месяце — его первое число, иначе
- *  сегодня. Иначе запись уезжает в текущий месяц и на экране не появляется. */
-function defaultDayFor(route: Route, today: string): string {
-  const [y, m] = today.split("-").map(Number);
-  if (route.year === y && route.month === m) return today;
-  return `${route.year}-${String(route.month).padStart(2, "0")}-01`;
-}
-
-/** Одни и те же фильтры для первой страницы и для догрузки. */
-function listParams(route: Route) {
-  if (route.query) return { q: route.query };
-  return {
-    year: route.year,
-    month: route.month,
-    pending: route.pending ? 1 : undefined,
-    category: route.category || undefined,
-	recipient: route.recipient || undefined,
-  };
-}
-
-type Route = { year: number; month: number; query: string; pending: boolean; category: number; recipient: string };
-
-/** Разбор хэша. Полноценный роутер ради трёх состояний — лишняя зависимость. */
-function parseHash(): Route {
-  const now = new Date();
-  const raw = window.location.hash.replace(/^#\/?/, "");
-  const [path, search = ""] = raw.split("?");
-  const params = new URLSearchParams(search);
-
-  const match = /^m\/(\d{4})-(\d{2})$/.exec(path);
-  return {
-    year: match ? Number(match[1]) : now.getFullYear(),
-    month: match ? Number(match[2]) : now.getMonth() + 1,
-    query: params.get("q") ?? "",
-    pending: params.get("pending") === "1",
-    category: Number(params.get("cat") ?? 0) || 0,
-	recipient: params.get("to") ?? "",
-  };
-}
-
-function hashFor(r: Route): string {
-  const params = new URLSearchParams();
-  if (r.query) params.set("q", r.query);
-  if (r.pending) params.set("pending", "1");
-  if (r.category) params.set("cat", String(r.category));
-	if (r.recipient) params.set("to", r.recipient);
-  const tail = params.toString();
-  return `#/m/${r.year}-${String(r.month).padStart(2, "0")}${tail ? "?" + tail : ""}`;
-}
+type Tab = "month" | "list" | "group" | "cats";
 
 export default function App() {
-  const [route, setRoute] = useState<Route>(parseHash);
-  const [me, setMe] = useState<Me | null>(null);
-  const [report, setReport] = useState<MonthReport | null>(null);
-  const [items, setItems] = useState<Tx[]>([]);
-  const [total, setTotal] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [expired, setExpired] = useState(false);
-  const [searching, setSearching] = useState(false);
-  const [stuck, setStuck] = useState(false);
-  const [categories, setCategories] = useState<Category[]>([]);
-	const [groups, setGroups] = useState<BeneficiaryGroup[]>([]);
-  const [editing, setEditing] = useState<Tx | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [toast, setToast] = useState<{ text: string; undo?: () => void } | null>(null);
-  const [days, setDays] = useState<DayPoint[]>([]);
-  const [editingCats, setEditingCats] = useState(false);
-	const [editingGroups, setEditingGroups] = useState(false);
-  const [editingPhoto, setEditingPhoto] = useState(false);
-  const [months, setMonths] = useState<MonthPoint[]>([]);
-
-  // Номер запроса: ответы по параллельным соединениям приходят не по
-  // порядку, и без этого три быстрых нажатия «‹» оставляют на экране июнь
-  // под заголовком «Июль».
-  const request = useRef(0);
-  const [loadingMore, setLoadingMore] = useState(false);
-
-  useEffect(() => {
-    const onHash = () => setRoute(parseHash());
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
-  }, []);
-
-  useEffect(() => {
-    const onScroll = () => setStuck(window.scrollY > 40);
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
-
-  // Смена месяца — replaceState: иначе «назад» после пяти листаний
-  // возвращает по одному месяцу вместо выхода.
-  const go = useCallback((next: Route, push = false) => {
-    const hash = hashFor(next);
-    if (push) window.location.hash = hash;
-    else window.history.replaceState(null, "", hash);
-    setRoute(next);
-  }, []);
-
-  useEffect(() => {
-    api.me().then(setMe).catch(handleAuthError);
-    api.categories().then(setCategories).catch(() => {});
-	api.beneficiaryGroups().then(setGroups).catch(() => {});
-    api.months().then(setMonths).catch(() => {});
-  }, []);
-
-  // Тост живёт шесть секунд: столько нужно, чтобы передумать удалять.
-  useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => setToast(null), 6000);
-    return () => clearTimeout(timer);
-  }, [toast]);
-
-  function handleAuthError(err: unknown) {
-    if (err instanceof Unauthorized) setExpired(true);
-    else setError(err instanceof Error ? err.message : "что-то сломалось");
-  }
-
-  const load = useCallback(async () => {
-    // При смене месяца прошлый экран приглушается, а не мигает скелетом.
-    if (report) setRefreshing(true);
-    setError(null);
-
-    const id = ++request.current;
-    try {
-      const [monthData, page, dayData] = await Promise.all([
-		route.query ? Promise.resolve(null) : api.month(route.year, route.month, route.recipient),
-        api.transactions({ ...listParams(route), limit: PAGE }),
-        route.query ? Promise.resolve([]) : api.daily(route.year, route.month),
-      ]);
-
-      if (id !== request.current) return; // ответ устарел, пришёл другой месяц
-
-      if (monthData) setReport(monthData);
-      setDays(dayData);
-      setItems(page.items);
-      setTotal(page.total);
-      setHasMore(page.has_more);
-    } catch (err) {
-      if (id === request.current) handleAuthError(err);
-    } finally {
-      if (id === request.current) {
-        setLoading(false);
-        setRefreshing(false);
-      }
-    }
-	}, [route.year, route.month, route.query, route.pending, route.category, route.recipient]); // eslint-disable-line
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  async function loadMore() {
-    if (loadingMore) return; // второй тап по «Показать ещё» приклеил бы ту же страницу
-    setLoadingMore(true);
-    try {
-      const page = await api.transactions({
-        ...listParams(route),
-        limit: PAGE,
-        offset: items.length,
-      });
-      // Пока листали, бот мог записать новую трату: страницы сдвигаются,
-      // и по offset приезжают уже показанные записи.
-      setItems((prev) => {
-        const seen = new Set(prev.map((tx) => tx.id));
-        return [...prev, ...page.items.filter((tx) => !seen.has(tx.id))];
-      });
-      setHasMore(page.has_more);
-      setTotal(page.total);
-    } catch (err) {
-      handleAuthError(err);
-    } finally {
-      setLoadingMore(false);
-    }
-  }
-
-  const today = useMemo(() => todayFrom(items), [items]);
-  const grouped = useMemo(() => groupByDay(items), [items]);
-	const selectedRecipient = report?.beneficiaries.find((line) => line.key === route.recipient);
-
-  if (expired) return <Expired />;
-
-  const shiftMonth = (delta: number) => {
-    const d = new Date(route.year, route.month - 1 + delta, 1);
-    go({ ...route, query: "", year: d.getFullYear(), month: d.getMonth() + 1 });
-  };
+  const [state, setState] = useState<State | null>(null);
+  const [error, setError] = useState("");
+  const [tab, setTab] = useState<Tab>("month");
 
   const now = new Date();
-  const isCurrentMonth = route.year === now.getFullYear() && route.month === now.getMonth() + 1;
+  const [period, setPeriod] = useState({ year: now.getFullYear(), month: now.getMonth() + 1 });
+
+  const [report, setReport] = useState<MonthReport | null>(null);
+  const [days, setDays] = useState<DayPoint[]>([]);
+  const [months, setMonths] = useState<MonthPoint[]>([]);
+
+  const [filter, setFilter] = useState<TxFilter>({});
+  const [items, setItems] = useState<Tx[]>([]);
+  const [total, setTotal] = useState(0);
+  const [editing, setEditing] = useState<Tx | null>(null);
+
+  useEffect(() => {
+    tg?.ready();
+    tg?.expand();
+  }, []);
+
+  const loadState = useCallback(async () => {
+    try {
+      setState(await api.state());
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Не удалось связаться с сервером.");
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadState();
+  }, [loadState]);
+
+  const inGroup = Boolean(state?.group);
+
+  // Отчёт и полоса месяцев грузятся вместе: полоса — это навигация, и без
+  // неё месяц не переключить.
+  useEffect(() => {
+    if (!inGroup) return;
+    Promise.all([api.month(period.year, period.month), api.days(period.year, period.month), api.months()])
+      .then(([m, d, ms]) => {
+        setReport(m);
+        setDays(d);
+        setMonths(ms);
+      })
+      .catch((e) => setError(e instanceof ApiError ? e.message : "Не смог посчитать отчёт."));
+  }, [inGroup, period.year, period.month]);
+
+  const reload = useCallback(
+    async (f: TxFilter) => {
+      if (!inGroup) return;
+      try {
+        const res = await api.transactions({ ...f, ...monthBounds(period) });
+        setItems(res.items);
+        setTotal(res.total);
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : "Не смог загрузить траты.");
+      }
+    },
+    [inGroup, period],
+  );
+
+  useEffect(() => {
+    void reload(filter);
+  }, [reload, filter]);
+
+  const slots = useMemo(
+    () => slotsFor(state?.members ?? [], state?.group?.member_id ?? 0),
+    [state?.members, state?.group?.member_id],
+  );
+
+  if (!state) {
+    return (
+      <main className="app">
+        {error ? <ErrorBar text={error} onClose={() => setError("")} /> : <p className="loading">Секунду…</p>}
+      </main>
+    );
+  }
+
+  if (!state.group) {
+    return (
+      <main className="app">
+        {error && <ErrorBar text={error} onClose={() => setError("")} />}
+        <NoGroupScreen state={state} onChanged={loadState} />
+      </main>
+    );
+  }
+
+  // Тап по строке отчёта фильтрует список — это и есть ответ на вопрос
+  // «из чего сложилась эта сумма».
+  const drillTo = (f: TxFilter) => {
+    setFilter(f);
+    setTab("list");
+  };
 
   return (
-    <div className="app">
-      <header className={`head${stuck ? " head--stuck" : ""}`}>
-        {searching ? (
-          <>
-            <button
-              className="iconbtn"
-              aria-label="Закрыть поиск"
-              onClick={() => {
-                setSearching(false);
-                go({ ...route, query: "" });
-              }}
-            >
-              ✕
-            </button>
-            <div className="search" style={{ flex: 1, paddingBottom: 0 }}>
-              <input
-                autoFocus
-                placeholder="Описание или сумма"
-                defaultValue={route.query}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") go({ ...route, query: e.currentTarget.value }, true);
-                  if (e.key === "Escape") { setSearching(false); go({ ...route, query: "" }); }
-                }}
-              />
-            </div>
-          </>
-        ) : (
-          <>
-            <button className="iconbtn" onClick={() => shiftMonth(-1)} aria-label="Предыдущий месяц">
-              ‹
-            </button>
-            <div className="head__title">
-              {stuck && report ? (
-                <>
-                  {monthName(route.month)} <span className="head__sum">{money(report.total)}</span>
-                </>
-              ) : (
-                `${monthName(route.month)} ${route.year}`
-              )}
-            </div>
-            <button
-              className="iconbtn"
-              onClick={() => shiftMonth(1)}
-              disabled={isCurrentMonth}
-              aria-label="Следующий месяц"
-            >
-              ›
-            </button>
-            <button className="iconbtn" onClick={() => setSearching(true)} aria-label="Поиск">
-              <SearchIcon />
-            </button>
-          </>
-        )}
-      </header>
+    <main className="app">
+      {error && <ErrorBar text={error} onClose={() => setError("")} />}
 
-      {error && (
-        <div className="notice notice--error" role="alert">
-          <span aria-hidden>⚠</span>
-          <span style={{ flex: 1 }}>{error}</span>
-          <button className="notice__action" onClick={() => void load()}>
-            Повторить
-          </button>
+      {tab === "month" && report && (
+        <div className="screen">
+          <MonthStrip points={months} active={period} onPick={setPeriod} />
+
+          <header className="screen__head">
+            <h1>
+              {monthName(period.month)} {period.year}
+            </h1>
+            <p className="total">{money(report.total)}</p>
+            <Comparison report={report} />
+          </header>
+
+          {report.review > 0 && (
+            <button
+              className="review"
+              onClick={() => drillTo({ pending: true })}
+              title="Категорию этим записям выбрал не человек"
+            >
+              {report.review} {plural(report.review, "запись", "записи", "записей")} стоит проверить
+            </button>
+          )}
+
+          <DayColumns days={days} today={todayISO()} />
+
+          <StackedBar
+            title="Кто платил"
+            lines={report.payers}
+            slotOf={(l) => slotClass(l.key, slots)}
+            activeKey={filter.payer ? `member:${filter.payer}` : undefined}
+            onPick={(l) => drillTo({ payer: l.id })}
+          />
+
+          <StackedBar
+            title="На кого ушло"
+            lines={report.beneficiaries}
+            slotOf={(l) => slotClass(l.key, slots)}
+            activeKey={
+              filter.recipient === "common"
+                ? "common"
+                : filter.recipient
+                  ? `member:${filter.recipient}`
+                  : undefined
+            }
+            onPick={(l) => drillTo({ recipient: l.key === "common" ? "common" : l.id })}
+          />
+
+          <CategoryBars
+            lines={report.categories}
+            activeID={filter.category ?? 0}
+            onPick={(id) => drillTo({ category: id })}
+          />
         </div>
       )}
 
-      {loading ? (
-        <Skeleton />
-      ) : (
-        <div className={refreshing ? "fade" : undefined}>
-          {route.query ? (
-            <SearchSummary query={route.query} total={total} />
-          ) : (
-            report && (
-              <>
-                <Hero report={report} />
-                {months.length > 0 && (
-                  <MonthStrip
-                    points={stripPoints(months, route, report.total)}
-                    active={{ year: route.year, month: route.month }}
-                    onPick={(p) => go({ ...route, query: "", year: p.year, month: p.month })}
-                  />
-                )}
-              </>
-            )
-          )}
+      {tab === "list" && (
+        <div className="screen">
+          <header className="screen__head">
+            <h1>Траты</h1>
+            <p className="screen__sub">
+              {monthName(period.month)} {period.year} · {total}{" "}
+              {plural(total, "запись", "записи", "записей")}
+            </p>
+          </header>
 
-          {!route.query && report && report.pending > 0 && !route.pending && (
-            <button className="notice" onClick={() => go({ ...route, pending: true }, true)}>
-              <span>⚠</span>
-              <span style={{ flex: 1, textAlign: "left" }}>
-                {report.pending} {plural(report.pending, "запись разобрана", "записи разобраны", "записей разобрано")}{" "}
-                вслепую
-              </span>
-              <span>Проверить →</span>
+          {hasFilter(filter) && (
+            <button className="filter-reset" onClick={() => setFilter({})}>
+              Показать все за месяц ✕
             </button>
           )}
-
-          {!route.query && report && Number(report.total) > 0 && (
-            <>
-              <div className="grid">
-                <div className="grid__main">
-                  <CategoryBars
-                    lines={report.categories}
-                    activeID={route.category}
-                    onPick={(id) => go({ ...route, category: route.category === id ? 0 : id }, true)}
-                    deltas={deltasOf(report.categories)}
-					scope={selectedRecipient && report.recipient_total
-					  ? { name: selectedRecipient.name, amount: report.recipient_total }
-					  : undefined}
-                  />
-                  <DayColumns days={days} today={today} />
-                </div>
-                <div className="grid__side">
-                  <StackedBar title="Кто платил" lines={report.payers} slotOf={(l) => slotOf(l, me)} />
-				  <StackedBar
-					title="На кого ушло"
-					lines={report.beneficiaries}
-					slotOf={(l) => slotOf(l, me)}
-					activeKey={route.recipient}
-					onPick={(line) =>
-					  go({ ...route, recipient: route.recipient === line.key ? "" : line.key }, true)
-					}
-				  />
-                </div>
-              </div>
-            </>
-          )}
-
-          {route.category > 0 && (
-            <div className="foot" style={{ paddingTop: 8 }}>
-              {report?.categories.find((c) => c.id === route.category)?.name ?? "Категория"} · {total}
-              <button onClick={() => go({ ...route, category: 0 }, true)}>снять фильтр</button>
-            </div>
-          )}
-
-          {route.pending && (
-            <div className="foot" style={{ paddingTop: 8 }}>
-              На проверку · {total}
-              <button onClick={() => go({ ...route, pending: false }, true)}>снять фильтр</button>
-            </div>
-          )}
-
-		  {selectedRecipient && (
-			<div className="list-scope">
-			  <span className="list-scope__title">Операции · {selectedRecipient.name}</span>
-			  <span className="list-scope__count">{total}</span>
-			  <button
-				className="list-scope__clear"
-				onClick={() => go({ ...route, recipient: "" }, true)}
-				aria-label="Показать операции для всех"
-			  >
-				Сбросить
-			  </button>
-			</div>
-		  )}
 
           {items.length === 0 ? (
-            <Empty query={route.query} month={route.month} />
+            <Empty title="Пусто" hint="Напиши боту тратой — она появится здесь." />
           ) : (
-            grouped.map(([day, dayItems]) => (
-              <section key={day}>
-                <div className="day">
-                  <span>{dayLabel(day, route.query ? "" : today)}</span>
-                  <span className="day__sum">расходы {money(dayExpenses(dayItems))}</span>
-                </div>
-                <div className="rows">
-                  {dayItems.map((tx) => (
-					<Row key={tx.id} tx={tx} me={me} groups={groups} onOpen={() => setEditing(tx)} />
-                  ))}
-                </div>
-              </section>
-            ))
+            <TxList
+              items={items}
+              members={state.members}
+              categories={state.categories}
+              slots={slots}
+              onPick={setEditing}
+            />
           )}
-
-          {hasMore && (
-            <button className="more" onClick={() => void loadMore()} disabled={loadingMore}>
-              {loadingMore ? "Гружу…" : `Показать ещё · осталось ${Math.max(total - items.length, 0)}`}
-            </button>
-          )}
-
-          <Footer
-            me={me}
-            onCategories={() => setEditingCats(true)}
-			onGroups={() => setEditingGroups(true)}
-            onPhoto={() => setEditingPhoto(true)}
-          />
         </div>
       )}
 
-      {!loading && (
-        <button className="fab" onClick={() => setCreating(true)} aria-label="Добавить запись">
-          +
-        </button>
+      {tab === "group" && <GroupScreen state={state} slots={slots} onChanged={loadState} />}
+
+      {tab === "cats" && (
+        <Categories categories={state.categories} members={state.members} onChanged={loadState} />
       )}
 
-      {(editing || creating) && (
-        <Sheet
+      <nav className="tabs">
+        {(
+          [
+            ["month", "Месяц"],
+            ["list", "Траты"],
+            ["group", "Группа"],
+            ["cats", "Категории"],
+          ] as [Tab, string][]
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            className={`tabs__item${tab === id ? " tabs__item--on" : ""}`}
+            onClick={() => setTab(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      {editing && (
+        <TxEdit
           tx={editing}
-          categories={categories}
-		  groups={groups}
-          today={today}
-          me={me}
-          defaultDay={editing ? editing.day : defaultDayFor(route, today)}
-          onClose={() => {
+          members={state.members}
+          categories={state.categories}
+          slots={slots}
+          onClose={() => setEditing(null)}
+          onDone={(next) => {
             setEditing(null);
-            setCreating(false);
-          }}
-          onSaved={() => void load()}
-          onDeleted={(tx) => {
-            setItems((prev) => prev.filter((item) => item.id !== tx.id));
-            void load();
-            setToast({
-              text: "Удалено",
-              undo: async () => {
-                try {
-                  await api.restore(tx.id);
-                } catch (err) {
-                  handleAuthError(err);
-                } finally {
-                  setToast(null);
-                  void load();
-                }
-              },
-            });
-          }}
-        />
-      )}
-
-      {editingPhoto && (
-        <Photo
-          me={me}
-          onClose={() => setEditingPhoto(false)}
-          // Заново, а не подстановкой версии из ответа: аватарка своя ещё и
-          // в строках, и все они смотрят на me.
-          onSaved={() => api.me().then(setMe).catch(handleAuthError)}
-        />
-      )}
-
-      {editingCats && (
-        <Categories
-          categories={categories}
-          me={me}
-		  groups={groups}
-          onClose={() => setEditingCats(false)}
-          onSaved={(c) => {
-            setCategories((prev) =>
-              prev.some((x) => x.id === c.id)
-                ? prev.map((x) => (x.id === c.id ? c : x))
-                : [...prev, c],
+            // Отчёт пересчитывать надо: правка меняет и суммы, и раскладку.
+            setItems((prev) =>
+              next ? prev.map((t) => (t.id === next.id ? next : t)) : prev.filter((t) => t.id !== editing.id),
             );
-            void load();
+            setPeriod({ ...period });
           }}
         />
       )}
-
-	  {editingGroups && (
-		<Groups
-		  groups={groups}
-		  onClose={() => setEditingGroups(false)}
-		  onChanged={(next) => {
-			setGroups(next);
-			void load();
-		  }}
-		/>
-	  )}
-
-      {toast && (
-        <div className="toast" role="status">
-          <span style={{ flex: 1 }}>{toast.text}</span>
-          {toast.undo && (
-            <button className="toast__action" onClick={() => void toast.undo!()}>
-              Вернуть
-            </button>
-          )}
-        </div>
-      )}
-    </div>
+    </main>
   );
 }
 
-function SearchIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
-      <circle cx="9" cy="9" r="6" stroke="currentColor" strokeWidth="2" />
-      <path d="M13.5 13.5L17 17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
+/**
+ * Сравнение с прошлым месяцем.
+ *
+ * Сравнивается сопоставимый отрезок: незакрытый месяц — с тем же числом дней
+ * прошлого. Иначе 5 июля всегда «на 80% меньше», и это не информация. Первые
+ * дни месяца сервер не сравнивает вовсе — оттуда и null.
+ */
+function Comparison({ report }: { report: MonthReport }) {
+  if (!report.compare) return null;
 
-function Hero({ report }: { report: MonthReport }) {
-  const zero = Number(report.total) === 0;
-  // Ноль в 48 пикселей — не информация, а дыра посреди экрана.
-  if (zero) return null;
-  return (
-    <div className="hero">
-      <div className="hero__label">Всего за {monthName(report.month).toLowerCase()}</div>
-      <div className="hero__value">{money(report.total)}</div>
-      {report.compare && (
-        <div className="hero__delta">
-          {deltaText(report)}
-          {report.compare.partial ? ` · за первые ${report.compare.days} дн.` : ""}
-        </div>
-      )}
-    </div>
-  );
-}
+  const prev = Number(report.compare.previous);
+  const cur = Number(report.compare.current);
+  if (prev <= 0) return null;
 
-/** Процент врёт на малой базе — тогда показываем разницу в рублях. */
-function deltaText(report: MonthReport): string {
-  const c = report.compare!;
-  const prevMonth = monthOf(report.month === 1 ? 12 : report.month - 1);
-  if (c.has_percent) {
-    return `${c.percent >= 0 ? "↑" : "↓"} ${Math.abs(c.percent)}% к ${prevMonth}`;
-  }
-  const grew = !c.difference.startsWith("-");
-  return `${grew ? "↑" : "↓"} ${money(c.difference.replace("-", ""))} к ${prevMonth}`;
-}
-
-function SearchSummary({ query, total }: { query: string; total: number }) {
-  return (
-    <div className="hero">
-      <div className="hero__label">Поиск</div>
-      <div className="hero__value" style={{ fontSize: 28 }}>
-        «{query}»
-      </div>
-      <div className="hero__delta">
-        {total} {plural(total, "запись", "записи", "записей")} за всё время
-      </div>
-    </div>
-  );
-}
-
-function Row({ tx, me, groups, onOpen }: { tx: Tx; me: Me | null; groups: BeneficiaryGroup[]; onOpen: () => void }) {
-  const isMine = me ? tx.payer_id === me.id : tx.mine;
-  const name = isMine ? me?.name ?? "Я" : me?.partner?.name ?? "Партнёр";
-  const transfer = tx.kind === "transfer";
-  const income = tx.kind === "income";
+  const delta = Math.round(((cur - prev) / prev) * 100);
+  if (delta === 0) return <p className="compare">столько же, сколько в прошлом месяце</p>;
 
   return (
-    <button className={`row${tx.needs_review ? " row--review" : ""}`} onClick={onOpen}>
-      <Avatar
-        id={tx.payer_id}
-        name={name}
-        other={isMine ? me?.partner?.name : me?.name}
-        partner={!isMine}
-        version={photoOf(tx.payer_id, me)}
-      />
-      <div className="row__main">
-        <div className="row__title">
-          {transfer ? "↔ Перевод" : tx.description || "без описания"}
-        </div>
-        <div className="row__meta">
-          {transfer
-            ? "не расход"
-            : `${tx.needs_review ? "проверить" : tx.category || "без категории"} · ${beneficiaryLabel(
-                tx.beneficiary,
-                tx.payer_id,
-                me,
-				groups,
-              )}`}
-        </div>
-      </div>
-      <div className="row__right">
-        <span className={`row__amount${transfer ? " row__amount--muted" : ""}`}>
-          {money(tx.amount, income)}
-        </span>
-      </div>
-    </button>
+    <p className={`compare${delta > 0 ? " compare--up" : ""}`}>
+      {delta > 0 ? "+" : "−"}
+      {Math.abs(delta)}% к прошлому месяцу
+      {report.compare.partial && ` за те же ${report.compare.days} ${plural(report.compare.days, "день", "дня", "дней")}`}
+    </p>
   );
 }
 
-async function leave(everywhere: boolean) {
-  try {
-    await api.logout(everywhere);
-  } finally {
-    // Даже если запрос не дошёл, перезагрузка покажет экран входа.
-    window.location.reload();
-  }
+/** Сегодня по часам устройства: сервер отдаёт моменты времени, а «какой это
+ *  день» человек читает по своим. */
+function todayISO(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-function Footer({
-  me,
-  onCategories,
-	onGroups,
-  onPhoto,
-}: {
-  me: Me | null;
-  onCategories: () => void;
-	onGroups: () => void;
-  onPhoto: () => void;
-}) {
-  return (
-    <div className="foot">
-      {/* Своё имя — оно же кнопка своего фото: другого места для неё нет,
-          а искать настройки профиля в списке трат никто не станет. */}
-      <button className="foot__me" onClick={onPhoto}>
-        {me && (
-          <Avatar
-            id={me.id}
-            name={me.name}
-            other={me.partner?.name}
-            version={me.avatar_version}
-            size={20}
-          />
-        )}
-        {me?.name ?? "…"}
-        <span className="foot__edit">фото</span>
-      </button>
-      <button onClick={onCategories}>Категории</button>
-	  <button onClick={onGroups}>Группы</button>
-      <button onClick={() => void leave(false)}>Выйти</button>
-      <button className="foot__danger" onClick={() => void leave(true)}>
-        Выйти отовсюду
-      </button>
-    </div>
-  );
+function monthBounds({ year, month }: { year: number; month: number }) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const last = new Date(year, month, 0).getDate();
+  return { from: `${year}-${pad(month)}-01`, to: `${year}-${pad(month)}-${pad(last)}` };
 }
 
-function Empty({ query, month }: { query: string; month: number }) {
-  if (query) {
-    return <div className="empty">Ничего не нашлось по «{query}»</div>;
-  }
-  return (
-    <div className="empty">
-      <p>В {monthOf(month)} трат нет.</p>
-      <p>
-        Напиши боту <code>600 лимонад</code> — запишется сюда.
-      </p>
-    </div>
-  );
-}
-
-function Expired() {
-  return (
-    <div className="gate">
-      <div>
-        <h1>Сессия закончилась</h1>
-        <p>Напиши боту /вход — он пришлёт новую ссылку.</p>
-      </div>
-    </div>
-  );
-}
-
-function Skeleton() {
-  return (
-    <div aria-hidden>
-      <div className="skeleton" style={{ height: 96, margin: "24px 0 16px" }} />
-      <div className="skeleton" style={{ height: 24, width: 120, marginBottom: 8 }} />
-      <div className="skeleton" style={{ height: 168 }} />
-    </div>
-  );
-}
-
-function groupByDay(items: Tx[]): [string, Tx[]][] {
-  const map = new Map<string, Tx[]>();
-  for (const tx of items) {
-    const list = map.get(tx.day);
-    if (list) list.push(tx);
-    else map.set(tx.day, [tx]);
-  }
-  return [...map.entries()];
-}
-
-/** Сумма дня — только расходы, как и итог месяца: переводы и доходы не в счёт. */
-function dayExpenses(items: Tx[]): string {
-  let cents = 0n;
-  for (const tx of items) {
-    if (tx.kind !== "expense") continue;
-    const [whole, frac = ""] = tx.amount.split(".");
-    cents += BigInt(whole) * 100n + BigInt(frac.padEnd(2, "0").slice(0, 2));
-  }
-  const sign = cents < 0n ? "-" : "";
-  const abs = cents < 0n ? -cents : cents;
-  return `${sign}${abs / 100n}.${String(abs % 100n).padStart(2, "0")}`;
+function hasFilter(f: TxFilter): boolean {
+  return Boolean(f.payer || f.recipient || f.category || f.pending || f.kind || f.q);
 }

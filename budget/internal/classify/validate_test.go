@@ -165,7 +165,7 @@ func TestValidateDropsNonPositiveAmount(t *testing.T) {
 
 func TestValidateEmptyItemsStayEmpty(t *testing.T) {
 	// Пустой ответ модели при непустых токенах — сигнал для деградированного
-	// пути (§8), Validate ничего не досочиняет.
+	// пути, Validate ничего не досочиняет.
 	items := Validate(nil, testRequest("600 лимонад", testCategories()), quietLog())
 	if len(items) != 0 {
 		t.Fatalf("ожидался пустой результат, получено %d", len(items))

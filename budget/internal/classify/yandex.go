@@ -34,12 +34,12 @@ type RawItem struct {
 }
 
 // UsageRecorder — куда писать расход токенов. После каждого вызова,
-// успешного или нет (§6). Принадлежит группе: расход считается по ней.
+// успешного или нет. Принадлежит группе: расход считается по ней.
 type UsageRecorder interface {
 	RecordUsage(ctx context.Context, model string, promptTokens, completionTokens int, ok bool, errorKind string) error
 }
 
-// Error — ошибка обращения к модели с видом из §7.
+// Error — ошибка обращения к модели с видом, который считает breaker.
 type Error struct {
 	Kind string
 	// Retryable — есть ли смысл в повторе. Квоту и неверный ключ повтор не
@@ -61,7 +61,7 @@ func ErrKind(err error) string {
 }
 
 // Yandex — клиент Yandex AI Studio. Голый net/http: у Яндекса схема
-// авторизации Api-Key, а не Bearer, и SDK под неё не подходит (§0).
+// авторизации Api-Key, а не Bearer, и SDK под неё не подходит.
 type Yandex struct {
 	client   *http.Client
 	baseURL  string
@@ -93,7 +93,7 @@ func NewYandex(cfg YandexConfig, log *slog.Logger) *Yandex {
 	}
 }
 
-// ModelURI — идентификатор модели в формате Яндекса (§6).
+// ModelURI — идентификатор модели в формате Яндекса.
 func (y *Yandex) ModelURI() string {
 	return "gpt://" + y.folderID + "/" + y.model
 }
@@ -146,7 +146,7 @@ func (y *Yandex) call(ctx context.Context, usage UsageRecorder, req Request) ([]
 	httpReq.Header.Set("OpenAI-Project", y.folderID)
 	httpReq.Header.Set("Content-Type", "application/json")
 	// Через API едет история личных трат — логирование на стороне Яндекса
-	// должно быть выключено (§6).
+	// должно быть выключено.
 	httpReq.Header.Set("x-data-logging-enabled", "false")
 
 	resp, err := y.client.Do(httpReq)
@@ -171,7 +171,7 @@ func (y *Yandex) call(ctx context.Context, usage UsageRecorder, req Request) ([]
 			Kind: kind,
 			// Повторяем только поломку сервиса. Неверный ключ и битый запрос
 			// повтором не лечатся, но в счётчик breaker идут: иначе бот будет
-			// долбиться в сеть на каждое сообщение (§13, проверка фазы 3).
+			// долбиться в сеть на каждое сообщение.
 			Retryable: kind == storage.ErrKindHTTP && resp.StatusCode >= 500,
 			Err:       fmt.Errorf("HTTP %d: %s", resp.StatusCode, trimForLog(raw)),
 		}
@@ -216,7 +216,7 @@ func (y *Yandex) call(ctx context.Context, usage UsageRecorder, req Request) ([]
 }
 
 // request собирает тело запроса: строгий JSON-схемный ответ, нулевая
-// температура, без стриминга и без истории диалога (§6).
+// температура, без стриминга и без истории диалога.
 func (y *Yandex) request(req Request) map[string]any {
 	return map[string]any{
 		"model":       y.ModelURI(),
@@ -233,7 +233,7 @@ func (y *Yandex) request(req Request) map[string]any {
 
 // responseFormat — JSON-схема ответа. Списки категорий и участников берутся
 // из состояния группы, а не из константы: иначе схема и БД разъедутся при
-// первом же изменении (§6).
+// первом же изменении.
 func responseFormat(req Request) map[string]any {
 	cats := req.Cats
 	names := make([]string, 0, len(cats))
@@ -246,7 +246,7 @@ func responseFormat(req Request) map[string]any {
 	}
 
 	// Подсказки уходят прямо в описание поля: пояснения внутри схемы заметно
-	// поднимают точность, и экономить на них незачем (plan.md §6).
+	// поднимают точность, и экономить на них незачем.
 	categoryDesc := "Категория траты"
 	if len(hints) > 0 {
 		categoryDesc += ". " + strings.Join(hints, "; ")
@@ -325,7 +325,7 @@ func (y *Yandex) record(ctx context.Context, usage UsageRecorder, prompt, comple
 
 // transportErrKind различает свой таймаут, отмену снаружи и поломку сети.
 // Отменённый пользователем или шатдауном запрос — не ошибка сервиса, и в
-// счётчик breaker (§7) он попадать не должен.
+// счётчик breaker он попадать не должен.
 func transportErrKind(parent, call context.Context, err error) string {
 	switch {
 	case parent.Err() != nil && errors.Is(parent.Err(), context.Canceled):
@@ -342,10 +342,10 @@ func retryableKind(kind string) bool {
 	return kind == storage.ErrKindTimeout || kind == storage.ErrKindHTTP
 }
 
-// httpErrKind различает исчерпанную квоту и обычную поломку сервиса (§7).
+// httpErrKind различает исчерпанную квоту и обычную поломку сервиса.
 // Любой другой отказ сервиса — в том числе 401 при неверном ключе — считается
 // http: такие ошибки должны копиться в breaker, иначе бот будет долбиться
-// в сеть на каждое сообщение (§13).
+// в сеть на каждое сообщение.
 func httpErrKind(status int, body []byte) string {
 	if status == http.StatusPaymentRequired || status == http.StatusTooManyRequests {
 		return storage.ErrKindQuota

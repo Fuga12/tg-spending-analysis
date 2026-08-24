@@ -2,7 +2,7 @@ package storage
 
 import "context"
 
-// Виды ошибок обращения к LLM (§7). Пишутся в llm_usage.error_kind.
+// Виды ошибок обращения к LLM. Пишутся в llm_usage.error_kind.
 const (
 	ErrKindTimeout = "timeout"
 	ErrKindQuota   = "quota"
@@ -21,7 +21,7 @@ type MonthUsage struct {
 }
 
 // MonthlyUsage считает расход с начала текущего месяца. Границу задаёт
-// date_trunc, поэтому первого числа счётчик обнуляется сам (§7).
+// date_trunc, поэтому первого числа счётчик обнуляется сам.
 func (s *Store) MonthlyUsage(ctx context.Context) (MonthUsage, error) {
 	var u MonthUsage
 	err := s.pool.QueryRow(ctx, `
@@ -37,7 +37,7 @@ func (s *Store) MonthlyUsage(ctx context.Context) (MonthUsage, error) {
 }
 
 // RecordUsage пишет строку про вызов LLM — успешный или нет. Без этой таблицы
-// невозможно понять, куда уходит грант (§6).
+// невозможно понять, куда уходит грант.
 //
 // Метод скоупнутый: токены жжёт разбор сообщения, а сообщение всегда пишет
 // участник группы. Тарификация групп будет позже, но колонка заполняется
@@ -57,7 +57,7 @@ func (g *GroupStore) RecordUsage(ctx context.Context, model string,
 }
 
 // UsageErrors — разбивка неуспешных вызовов по виду ошибки за текущий месяц,
-// для команды /лимит (§7).
+// для команды /лимит.
 func (s *Store) UsageErrors(ctx context.Context) (map[string]int, error) {
 	rows, err := s.pool.Query(ctx, `
 		select coalesce(error_kind, 'other'), count(*)
@@ -82,4 +82,23 @@ func (s *Store) UsageErrors(ctx context.Context) (map[string]int, error) {
 		out[kind] = count
 	}
 	return out, rows.Err()
+}
+
+// MonthlyUsage считает расход группы с начала текущего месяца.
+//
+// Тот же счётчик, что и общий, но с фильтром по группе: пока бот открыт,
+// чужие сообщения жгут грант владельца, и без разбивки по группам непонятно,
+// чьи именно.
+func (g *GroupStore) MonthlyUsage(ctx context.Context) (MonthUsage, error) {
+	var u MonthUsage
+	err := g.pool.QueryRow(ctx, `
+		select coalesce(sum(prompt_tokens), 0),
+		       coalesce(sum(completion_tokens), 0),
+		       coalesce(sum(prompt_tokens + completion_tokens), 0),
+		       count(*),
+		       count(*) filter (where not ok)
+		from llm_usage
+		where group_id = $1 and created_at >= date_trunc('month', now())`, g.groupID).
+		Scan(&u.PromptTokens, &u.CompletionTokens, &u.TotalTokens, &u.Calls, &u.Failed)
+	return u, err
 }

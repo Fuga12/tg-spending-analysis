@@ -115,7 +115,7 @@ func TestNotifyOnlySilentUsers(t *testing.T) {
 	r.Notify(ctx, now)
 
 	if _, ok := sender.sent[talker]; ok {
-		t.Error("тому, кто сегодня уже писал, напоминание не нужно (§12)")
+		t.Error("тому, кто сегодня уже писал, напоминание не нужно")
 	}
 	if sender.sent[silent] != text {
 		t.Errorf("молчуну отправлено %q, ожидалось %q", sender.sent[silent], text)

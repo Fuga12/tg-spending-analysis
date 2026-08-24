@@ -70,7 +70,7 @@ export function StackedBar({
 }: {
   title: string;
   lines: Line[];
-  slotOf: (line: Line) => number;
+  slotOf: (line: Line) => string;
 	onPick?: (line: Line) => void;
 	activeKey?: string;
 }) {
@@ -88,7 +88,7 @@ export function StackedBar({
         {lines.map((l) => (
           <div
             key={l.name}
-            className={`stack__seg slot-${slotOf(l)}`}
+            className={`stack__seg ${slotOf(l)}`}
             style={{ flexGrow: num(l.amount) }}
             title={`${l.name}: ${money(l.amount)}`}
           />
@@ -103,7 +103,7 @@ export function StackedBar({
 			  aria-pressed={onPick ? activeKey === l.key : undefined}
 			  onClick={() => onPick?.(l)}
 			>
-            <i className={`legend__dot slot-${slotOf(l)}`} />
+            <i className={`legend__dot ${slotOf(l)}`} />
 			<span className="legend__name">{l.name}</span>
 			<b>{money(l.amount)}</b>
 			{onPick && (

@@ -12,7 +12,7 @@ import (
 )
 
 // Слова, при которых кэш не срабатывает: они означают дату, несколько трат
-// или иную сложность, с которой словарь без контекста не справится (§5).
+// или иную сложность, с которой словарь без контекста не справится.
 var complexityTriggers = map[string]bool{
 	"вчера":     true,
 	"позавчера": true,
@@ -22,7 +22,7 @@ var complexityTriggers = map[string]bool{
 	"и":         true,
 }
 
-// Стоп-лист незначимых слов (§5).
+// Стоп-лист незначимых слов.
 var stopWords = map[string]bool{
 	"для": true, "что": true, "как": true, "там": true, "тут": true,
 	"это": true, "при": true, "над": true, "под": true, "без": true,
@@ -116,7 +116,7 @@ func wordsOfCategory(words []string, hits map[string]storage.WordHit, categoryID
 
 // bestHit выбирает победителя, когда значимые слова разошлись в категориях:
 // ручная правка важнее ответа модели, ответ модели важнее общей затравки,
-// внутри личного кэша — слово с максимальным hits (§5).
+// внутри личного кэша — слово с максимальным hits.
 func bestHit(words []string, hits map[string]storage.WordHit) (storage.WordHit, bool) {
 	var best storage.WordHit
 	found := false
@@ -164,7 +164,7 @@ func hasComplexity(text string) bool {
 }
 
 // SignificantWords — слова описания, по которым работает словарь: нижний
-// регистр, длина не меньше трёх символов, не из стоп-листа (§5).
+// регистр, длина не меньше трёх символов, не из стоп-листа.
 func SignificantWords(text string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -183,7 +183,7 @@ func SignificantWords(text string) []string {
 	return out
 }
 
-// Describe — текст без сумм, годный как описание траты (§8).
+// Describe — текст без сумм, годный как описание траты.
 //
 // Предлоги по краям убираются: «пиво на 4000» без этого даёт описание
 // «пиво на», и оно же уезжает в отчёты.

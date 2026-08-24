@@ -234,11 +234,12 @@ const recipientsExpr = `coalesce((
 // txSelect — общий список колонок для чтения транзакций. Первый параметр
 // запроса всегда group_id.
 const txSelect = `
-	select t.id, t.group_id, t.payer_member_id, ` + recipientsExpr + `,
+	select t.id, t.group_id, t.payer_member_id, m.user_id, ` + recipientsExpr + `,
 	       t.kind, t.amount::text, t.description, t.category_id, coalesce(c.name, ''),
 	       t.raw_text, t.needs_classification, t.needs_review,
 	       t.spent_at, t.created_at, t.updated_at
 	from transactions t
+	join members m on m.id = t.payer_member_id
 	left join categories c on c.id = t.category_id`
 
 func scanTransactions(rows pgx.Rows) ([]Transaction, error) {
@@ -250,7 +251,7 @@ func scanTransactions(rows pgx.Rows) ([]Transaction, error) {
 			t      Transaction
 			amount string
 		)
-		if err := rows.Scan(&t.ID, &t.GroupID, &t.PayerMemberID, &t.Recipients,
+		if err := rows.Scan(&t.ID, &t.GroupID, &t.PayerMemberID, &t.PayerUserID, &t.Recipients,
 			&t.Kind, &amount, &t.Description, &t.CategoryID, &t.CategoryName,
 			&t.RawText, &t.NeedsClassification, &t.NeedsReview,
 			&t.SpentAt, &t.CreatedAt, &t.UpdatedAt); err != nil {

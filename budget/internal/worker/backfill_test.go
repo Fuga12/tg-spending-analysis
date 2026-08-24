@@ -80,7 +80,7 @@ func newBackfill(t *testing.T, llm classify.LLM, breaker *classify.Breaker, budg
 	if err != nil {
 		t.Fatalf("группа: %v", err)
 	}
-	return New(store, svc, breaker, budget, quietLog()),
+	return New(store, svc, breaker, budget, 0, quietLog()),
 		group{store: store, g: store.ForGroup(gr.ID), member: member}
 }
 
@@ -132,7 +132,7 @@ func TestBackfillFillsCategory(t *testing.T) {
 
 func TestBackfillRestoresLostAmounts(t *testing.T) {
 	// «вчера пятёрочка 1200 и такси 400» при лежащем API сохранилось одной
-	// записью на 1200 (§8). Вторая трата есть только в raw_text — воркер
+	// записью на 1200. Вторая трата есть только в raw_text — воркер
 	// обязан её дописать, иначе она потеряна навсегда.
 	llm := &stubLLM{items: []classify.RawItem{
 		{Amount: "1200", Description: "пятёрочка", Category: "Продукты",
@@ -154,7 +154,7 @@ func TestBackfillRestoresLostAmounts(t *testing.T) {
 		t.Fatalf("расходы: %v", err)
 	}
 	if len(rows) != 2 {
-		t.Fatalf("записей %d (%+v), ожидались две — вторая трата не должна теряться (§8)", len(rows), rows)
+		t.Fatalf("записей %d (%+v), ожидались две — вторая трата не должна теряться", len(rows), rows)
 	}
 
 	// И дата обеих — вчерашняя, как сказала модель.
@@ -232,7 +232,7 @@ func TestBackfillSkipsTickWhenBreakerOpen(t *testing.T) {
 	w.Tick(context.Background())
 
 	if llm.calls != 0 {
-		t.Errorf("сетевых вызовов %d, при открытом breaker тик пропускается целиком (§12)", llm.calls)
+		t.Errorf("сетевых вызовов %d, при открытом breaker тик пропускается целиком", llm.calls)
 	}
 	tx, _ := gr.g.Transaction(context.Background(), id)
 	if !tx.NeedsClassification {

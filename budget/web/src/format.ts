@@ -1,8 +1,6 @@
 // Деньги приходят строками: в JSON число — это float64, а деньги через float
 // гонять нельзя.
 
-import type { BeneficiaryGroup, Me } from "./api";
-
 const NBSP = " ";
 
 /** «1 200 ₽», без копеек, если их нет. */
@@ -62,47 +60,19 @@ export function todayFrom(list: { day: string }[]): string {
 }
 
 /**
- * Кому досталась трата — по имени, а не «ей».
+ * Инициалы для кружка участника.
  *
- * «На неё» написано с точки зрения того, кто платил: на сайте видны записи
- * обоих, и второй человек прочитает эти же слова про себя наоборот. Имена
- * такой двусмысленности не допускают, а про себя понятнее всего «мне».
+ * Две буквы, а не одна: в группе из десяти человек одна буква совпадает
+ * почти наверняка, и кружки становятся неразличимы. Цвет слота помогает, но
+ * на него одного полагаться нельзя — дальтонизм никуда не делся.
  */
-export function beneficiaryLabel(
-  beneficiary: string,
-  payerID: number,
-  me: Me | null,
-  groups: BeneficiaryGroup[] = [],
-): string {
-  if (beneficiary === "both") return "на двоих";
-	if (beneficiary.startsWith("group:")) {
-		return groups.find((g) => g.key === beneficiary)?.name ?? "другим";
-	}
-  const target = beneficiary === "payer" ? payerID : otherID(payerID, me);
-  return personLabel(target, me) ?? (beneficiary === "payer" ? "на себя" : "партнёру");
-}
-
-/** Второй участник бюджета. */
-export function otherID(id: number, me: Me | null): number | null {
-  if (!me) return null;
-  if (id === me.id) return me.partner?.id ?? null;
-  if (id === me.partner?.id) return me.id;
-  return null;
-}
-
-/** Имя в дательном падеже, а для себя — «мне». null, если человек незнаком. */
-export function personLabel(id: number | null, me: Me | null): string | null {
-  if (id === null || !me) return null;
-  if (id === me.id) return "мне";
-  if (id === me.partner?.id) return me.partner.dative;
-  return null;
-}
-
-/** Инициалы: одной буквы мало, если у двоих имена на одну и ту же. */
-export function initials(name: string, other?: string): string {
-  const first = [...name.trim()][0]?.toUpperCase() ?? "?";
-  if (!other || [...other.trim()][0]?.toUpperCase() !== first) return first;
-  return [...name.trim()].slice(0, 2).join("").toUpperCase();
+export function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length > 1) {
+    return ([...parts[0]][0] + [...parts[1]][0]).toUpperCase();
+  }
+  return [...parts[0]].slice(0, 2).join("").toUpperCase();
 }
 
 /** Русское склонение по числу: 1 запись, 2 записи, 5 записей. */

@@ -272,7 +272,7 @@ func TestUpsertWordDoesNotOverwriteManual(t *testing.T) {
 	if err := g.UpsertWord(ctx, 1, "самокат", taxi, nil, SourceManual); err != nil {
 		t.Fatalf("ручная привязка: %v", err)
 	}
-	// Модель считает иначе — и не должна перебить пользователя (§8).
+	// Модель считает иначе — и не должна перебить пользователя.
 	if err := g.UpsertWord(ctx, 1, "самокат", food, nil, SourceLLM); err != nil {
 		t.Fatalf("привязка моделью: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestMonthlyUsageIgnoresPreviousMonth(t *testing.T) {
 	if err := g.RecordUsage(ctx, "gpt://f/m", 0, 0, false, ErrKindQuota); err != nil {
 		t.Fatalf("запись расхода: %v", err)
 	}
-	// Строка из прошлого месяца в текущий счётчик попадать не должна (§11).
+	// Строка из прошлого месяца в текущий счётчик попадать не должна.
 	_, err := s.pool.Exec(ctx, `
 		insert into llm_usage (created_at, model, prompt_tokens, completion_tokens, ok)
 		values (date_trunc('month', now()) - interval '3 days', 'gpt://f/m', 1000000, 1000, true)`)

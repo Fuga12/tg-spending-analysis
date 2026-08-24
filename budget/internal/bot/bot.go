@@ -16,7 +16,7 @@ import (
 )
 
 // Deps — всё, чем бот пользуется снаружи. Отдельной структурой, чтобы
-// команда /лимит могла спросить состояние предохранителей (§7).
+// команда /лимит могла спросить состояние предохранителей.
 type Deps struct {
 	Store      *storage.Store
 	Groups     *group.Service
@@ -41,8 +41,12 @@ type Bot struct {
 
 	// inflight считает обработчики в работе: telebot запускает каждый в своей
 	// горутине, и без этого счётчика остановка рвёт их на середине вместе с
-	// пулом БД. Терять записи нельзя (§8).
+	// пулом БД. Терять записи нельзя.
 	inflight sync.WaitGroup
+
+	// limiter — потолок сообщений в сутки на человека. Пока бот открыт, один
+	// увлёкшийся человек иначе выбирает грант за вечер.
+	limiter *limiter
 }
 
 // New собирает бота и регистрирует обработчики.
@@ -67,6 +71,7 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) (*Bot, error) {
 		breaker:    d.Breaker,
 		budget:     d.Budget,
 		log:        log,
+		limiter:    newLimiter(cfg.MessagesPerDay, cfg.TZ),
 	}
 	b.tb.Use(b.track, b.whitelist)
 	b.routes()
@@ -74,7 +79,7 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) (*Bot, error) {
 }
 
 // Send отправляет сообщение вне контекста апдейта — служебные уведомления
-// владельцу (§7) и напоминания (§12).
+// владельцу и напоминания.
 func (b *Bot) Send(userID int64, text string) error {
 	_, err := b.tb.Send(tele.ChatID(userID), text)
 	return err
@@ -113,7 +118,7 @@ func (b *Bot) track(next tele.HandlerFunc) tele.HandlerFunc {
 	}
 }
 
-// whitelist — единственная авторизация в боте (§9).
+// whitelist — единственная авторизация в боте.
 func (b *Bot) whitelist(next tele.HandlerFunc) tele.HandlerFunc {
 	return func(c tele.Context) error {
 		sender := c.Sender()
@@ -136,7 +141,7 @@ func (b *Bot) ctx() (context.Context, context.CancelFunc) {
 
 // classifyCtx — отдельный контекст на разбор сообщения. Разбор может съесть
 // две попытки по LLM_TIMEOUT плюс backoff, и делить дедлайн с записью в базу
-// нельзя: иначе трата разобрана, а сохранить её уже нечем (§8).
+// нельзя: иначе трата разобрана, а сохранить её уже нечем.
 func (b *Bot) classifyCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 2*b.cfg.LLMTimeout+10*time.Second)
 }

@@ -1,187 +1,156 @@
 import { useState } from "react";
-import { api, BeneficiaryGroup, Category, Me } from "./api";
+import { ApiError, api, type Category, type Member } from "./api";
+import { Sheet } from "./ui";
 
 /**
- * Варианты умолчания: два относительных и по одному на каждого участника.
+ * Категории группы.
  *
- * «Себе» и «на двоих» зависят от того, кто платил, а «Уле» — нет: косметика
- * достаётся Уле, кто бы её ни купил. Относительными значениями это не
- * выражается, поэтому у категории есть отдельный адресат-человек.
+ * Подсказка — не украшение: она уезжает в промпт и в JSON-схему, и это
+ * единственный способ научить модель различать то, что путает именно эту
+ * группу. «Алкоголь — пиво, вино» перестаёт уходить в Продукты.
  */
-function defaultOptions(me: Me | null, groups: BeneficiaryGroup[]) {
-  const people = me
-    ? [me.partner, { id: me.id, name: me.name, dative: me.dative }].filter(
-        (p): p is NonNullable<typeof p> => p !== null,
-      )
-    : [];
-  return [
-    { key: "payer", label: "себе" },
-    { key: "both", label: "на двоих" },
-    ...people.map((p) => ({ key: `user:${p.id}`, label: p.dative })),
-	...groups.map((g) => ({ key: g.key, label: g.name })),
-  ];
-}
-
-const defaultKey = (c: { beneficiary: string; user_id: number | null }) =>
-  c.user_id !== null ? `user:${c.user_id}` : c.beneficiary;
-
-const defaultLabel = (c: Category, me: Me | null, groups: BeneficiaryGroup[]) =>
-  defaultOptions(me, groups).find((o) => o.key === defaultKey(c))?.label ?? "на двоих";
-
-/**
- * Правка категорий. Названия и подсказки уходят прямо в JSON-схему запроса
- * к модели: подсказка — единственный способ научить её различать то, что
- * путает именно нас («самокат» — это аренда или магазин?).
- *
- * Свои категории добавлять можно — но каждая удлиняет промпт и усложняет
- * модели выбор, поэтому список стоит держать коротким.
- */
-export default function Categories({
+export function Categories({
   categories,
-  me,
-	groups,
-  onClose,
-  onSaved,
+  members,
+  onChanged,
 }: {
   categories: Category[];
-  me: Me | null;
-	groups: BeneficiaryGroup[];
-  onClose: () => void;
-  onSaved: (c: Category) => void;
+  members: Member[];
+  onChanged: () => void;
 }) {
-  const [editing, setEditing] = useState<Category | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<Category | "new" | null>(null);
+  const byID = new Map(members.map((m) => [m.id, m]));
 
   return (
-    <div className="backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="sheet" role="dialog" aria-modal="true">
-        <div className="sheet__grip" />
-        <h2 className="sheet__title">
-          {editing ? editing.name : creating ? "Новая категория" : "Категории"}
-        </h2>
-        {!editing && !creating && (
-          <p className="sheet__hint">
-            Подсказка уходит в запрос к модели — по ней она решает, куда отнести трату.
-            «По умолчанию» побеждает догадку: если в сообщении не сказано, на кого
-            потрачено, берётся оно.
-          </p>
-        )}
+    <div className="screen">
+      <header className="screen__head">
+        <h1>Категории</h1>
+        <p className="screen__sub">Подсказка помогает боту разбирать сообщения точнее.</p>
+      </header>
 
-        {editing || creating ? (
-          <CategoryForm
-            category={editing}
-            me={me}
-			groups={groups}
-            onCancel={() => {
-              setEditing(null);
-              setCreating(false);
-            }}
-            onSaved={(c) => {
-              onSaved(c);
-              setEditing(null);
-              setCreating(false);
-            }}
-          />
-        ) : (
-          <>
-            <div className="cats">
-              {categories.map((c) => (
-                <button key={c.id} className="cats__row" onClick={() => setEditing(c)}>
-                  <span className="cats__name">
-                    {c.name}
-                    <span className="cats__default">{defaultLabel(c, me, groups)}</span>
-                  </span>
-                  <span className="cats__hint">{c.hint || "без подсказки"}</span>
-                </button>
-              ))}
-            </div>
-            <button className="btn" onClick={() => setCreating(true)}>
-              Добавить категорию
+      <ul className="cats">
+        {categories.map((c) => (
+          <li key={c.id}>
+            <button className="cats__item" onClick={() => setEditing(c)}>
+              <span className="cats__name">{c.name}</span>
+              {c.hint && <span className="cats__hint">{c.hint}</span>}
+              {c.default_to !== null && (
+                <span className="cats__to">по умолчанию — {byID.get(c.default_to)?.name ?? "кому-то"}</span>
+              )}
             </button>
-          </>
-        )}
-      </div>
+          </li>
+        ))}
+      </ul>
+
+      <button className="btn btn--primary" onClick={() => setEditing("new")}>
+        Добавить категорию
+      </button>
+
+      {editing && (
+        <CategorySheet
+          category={editing === "new" ? null : editing}
+          members={members}
+          onClose={() => setEditing(null)}
+          onDone={() => {
+            setEditing(null);
+            onChanged();
+          }}
+        />
+      )}
     </div>
   );
 }
 
-function CategoryForm({
+function CategorySheet({
   category,
-  me,
-	groups,
-  onCancel,
-  onSaved,
+  members,
+  onClose,
+  onDone,
 }: {
   category: Category | null;
-  me: Me | null;
-	groups: BeneficiaryGroup[];
-  onCancel: () => void;
-  onSaved: (c: Category) => void;
+  members: Member[];
+  onClose: () => void;
+  onDone: () => void;
 }) {
   const [name, setName] = useState(category?.name ?? "");
   const [hint, setHint] = useState(category?.hint ?? "");
-  const [target, setTarget] = useState(
-    category ? defaultKey(category) : "both",
-  );
-  const options = defaultOptions(me, groups);
-  const userID = target.startsWith("user:") ? Number(target.slice(5)) : null;
-	const beneficiary = userID !== null ? "payer" : target;
+  const [defaultTo, setDefaultTo] = useState<number | null>(category?.default_to ?? null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState("");
 
-  async function save() {
+  const save = async () => {
+    if (!name.trim()) {
+      setError("У категории должно быть название.");
+      return;
+    }
     setBusy(true);
-    setError(null);
+    setError("");
     try {
-      const body = { name, hint, beneficiary, user_id: userID };
-      const saved = category
-        ? await api.patchCategory(category.id, body)
-        : await api.createCategory(body);
-      onSaved({ ...(category ?? {}), ...saved } as Category);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "не сохранилось");
+      if (category) await api.updateCategory(category.id, name, hint, defaultTo);
+      else await api.createCategory(name, hint, defaultTo);
+      onDone();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Не смог сохранить.");
       setBusy(false);
     }
-  }
+  };
 
   return (
-    <>
-      <div className="field">
-        <div className="field__label">Название</div>
-        <input className="input" value={name} maxLength={32} onChange={(e) => setName(e.target.value)} />
-      </div>
-      <div className="field">
-        <div className="field__label">Подсказка для модели</div>
+    <Sheet
+      title={category ? "Категория" : "Новая категория"}
+      onClose={onClose}
+      foot={
+        <button className="btn btn--primary" onClick={save} disabled={busy}>
+          Сохранить
+        </button>
+      }
+    >
+      {error && <p className="field__error">{error}</p>}
+
+      <label className="field">
+        <span className="field__label">Название</span>
+        <input className="field__input" value={name} onChange={(e) => setName(e.target.value)} />
+      </label>
+
+      <label className="field">
+        <span className="field__label">Подсказка боту</span>
         <input
-          className="input"
+          className="field__input"
           value={hint}
-          maxLength={120}
-          placeholder="что сюда относится"
           onChange={(e) => setHint(e.target.value)}
+          placeholder="пиво, вино, крепкое"
         />
-      </div>
+      </label>
+
       <div className="field">
-        <div className="field__label">По умолчанию потрачено</div>
+        <span className="field__label">Кому по умолчанию</span>
+        {/* «Косметика — Уле» верно и когда платит не Уля. Без адресата
+            трата уходит тому, кто её записал. */}
         <div className="chips">
-          {options.map((o) => (
-            <button
-              key={o.key}
-              className={`chip${target === o.key ? " chip--on" : ""}`}
-              onClick={() => setTarget(o.key)}
-            >
-              {o.label}
-            </button>
-          ))}
+          <button
+            className={`chip${defaultTo === null ? " chip--on" : ""}`}
+            onClick={() => setDefaultTo(null)}
+          >
+            Тому, кто платил
+          </button>
+          {members
+            .filter((m) => !m.left)
+            .map((m) => (
+              <button
+                key={m.id}
+                className={`chip${defaultTo === m.id ? " chip--on" : ""}`}
+                onClick={() => setDefaultTo(m.id)}
+              >
+                {m.name}
+              </button>
+            ))}
         </div>
       </div>
 
-      {error && <div className="sheet__error">{error}</div>}
-      <button className="btn" onClick={() => void save()} disabled={busy || !name.trim()}>
-        {busy ? "Сохраняю…" : "Сохранить"}
-      </button>
-      <button className="btn btn--text" onClick={onCancel}>
-        Назад к списку
-      </button>
-    </>
+      <p className="field__hint">
+        После правки категорий бот забывает свои прежние догадки — но не то,
+        что вы поправили руками.
+      </p>
+    </Sheet>
   );
 }

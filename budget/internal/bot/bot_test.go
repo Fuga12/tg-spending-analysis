@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strconv"
 	"testing"
+	"time"
 
 	tele "gopkg.in/telebot.v3"
 
@@ -190,5 +191,42 @@ func TestInviteAnswerExplainsEachRefusal(t *testing.T) {
 	// Незнакомая ошибка не должна протекать наружу подробностями.
 	if inviteAnswer(errors.New("pq: connection refused")) != "Не получилось, попробуй ещё раз." {
 		t.Error("незнакомая ошибка должна отвечать общей фразой")
+	}
+}
+
+func TestLimiterCountsPerPersonPerDay(t *testing.T) {
+	// Потолок защищает грант от одного увлёкшегося человека, а не от группы:
+	// у соседа по группе свой счёт.
+	day := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
+	l := newLimiter(3, time.UTC)
+	l.now = func() time.Time { return day }
+
+	for i := 0; i < 3; i++ {
+		if !l.allow(1) {
+			t.Fatalf("сообщение %d должно проходить", i+1)
+		}
+	}
+	if l.allow(1) {
+		t.Error("четвёртое сообщение должно упереться в потолок")
+	}
+	if !l.allow(2) {
+		t.Error("у другого человека свой счёт")
+	}
+
+	// Сутки считаются по календарю: «до завтра» человек понимает, «через
+	// 14 часов от вашего сорокового сообщения» — нет.
+	l.now = func() time.Time { return day.AddDate(0, 0, 1) }
+	if !l.allow(1) {
+		t.Error("на следующий день счёт начинается заново")
+	}
+}
+
+func TestLimiterOffByDefaultValueZero(t *testing.T) {
+	// Ноль выключает счёт целиком: до открытия бота считать незачем.
+	l := newLimiter(0, time.UTC)
+	for i := 0; i < 1000; i++ {
+		if !l.allow(1) {
+			t.Fatal("при нулевом потолке ограничений быть не должно")
+		}
 	}
 }

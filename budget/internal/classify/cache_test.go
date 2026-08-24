@@ -154,7 +154,7 @@ func TestTwoAmountsGoToAPI(t *testing.T) {
 		"обед":  {CategoryID: 1, Source: storage.SourceSeed},
 	}, llm)
 
-	// Оба слова в словаре, но сумм две — словарь не берётся (§5, условие 1).
+	// Оба слова в словаре, но сумм две — быстрый путь не берётся.
 	if _, err := svc.Classify(context.Background(), sc, "такси 4000 обед 350"); err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"budget/internal/app"
 	"budget/internal/backup"
 	"budget/internal/bot"
 	"budget/internal/classify"
@@ -22,7 +23,7 @@ import (
 // shutdownTimeout — сколько ждём уже начатые обработчики, прежде чем гасить
 // клиента Telegram и пул БД.
 // Худший случай одного обработчика — разбор (2×LLM_TIMEOUT + запас) плюс
-// запись; таймаут должен быть заметно больше, иначе гарантия §8 не держится.
+// запись; таймаут должен быть заметно больше, иначе запись потеряется.
 const shutdownTimeout = 45 * time.Second
 
 // backfillPeriod — как часто воркер добирает непроклассифицированные записи.
@@ -128,7 +129,7 @@ func main() {
 
 	// Воркер добора: раз в 10 минут подбирает записи, которым не досталось
 	// категории.
-	backfill := worker.New(store, classifier, breaker, budget, log)
+	backfill := worker.New(store, classifier, breaker, budget, cfg.LLMGroupTokenBudget, log)
 	backfillDone := make(chan struct{})
 	go backfill.Run(ctx, backfillPeriod, backfillDone)
 
@@ -151,9 +152,26 @@ func main() {
 		log.Info("слежение за бэкапами выключено: BACKUP_DIR не задан")
 	}
 
+	// Mini App. Поднимается в том же процессе: у него та же база, тот же
+	// конфиг и то же время жизни, а второй бинарь означал бы второй деплой.
+	var mini *app.Server
+	if cfg.AppEnabled() {
+		mini = app.New(cfg, store, groups, log)
+		go func() {
+			if err := mini.Start(); err != nil {
+				log.Error("приложение упало", "err", err)
+			}
+		}()
+	} else {
+		log.Info("приложение не поднято: APP_LISTEN не задан")
+	}
+
 	go func() {
 		<-ctx.Done()
 		log.Info("останавливаюсь, доделываю начатое")
+		if mini != nil {
+			mini.Shutdown(shutdownTimeout)
+		}
 		rem.Stop()
 		if backups != nil {
 			backups.Stop()

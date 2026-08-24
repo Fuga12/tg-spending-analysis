@@ -1,5 +1,5 @@
 // Package worker добирает категории записям, которые сохранились
-// деградированными: LLM не ответил или был недоступен (§8, §12).
+// деградированными: LLM не ответил или был недоступен.
 package worker
 
 import (
@@ -11,13 +11,13 @@ import (
 	"budget/internal/storage"
 )
 
-// batchSize — сколько записей берём за тик (§12).
+// batchSize — сколько записей берём за тик.
 const batchSize = 20
 
 // staleAfter — сколько запись имеет право провисеть в очереди. Дальше она
 // закрывается «Прочим»: модель, которая устойчиво отвечает не по схеме или
 // не отвечает вовсе, иначе перезапрашивалась бы каждые десять минут вечно —
-// ровно тот цикл в воркере, от которого защищает §7.
+// ровно тот цикл в воркере, от которого защищают предохранители.
 const staleAfter = 2 * time.Hour
 
 // Backfill — периодический добор непроклассифицированных транзакций.
@@ -27,19 +27,21 @@ type Backfill struct {
 	breaker    *classify.Breaker
 	budget     *classify.Budget
 	log        *slog.Logger
+	// groupLimit — месячный потолок токенов на группу, ноль выключает.
+	groupLimit int64
 	now        func() time.Time // подменяется в тестах
 }
 
 func New(store *storage.Store, classifier *classify.Service, breaker *classify.Breaker,
-	budget *classify.Budget, log *slog.Logger) *Backfill {
+	budget *classify.Budget, groupLimit int64, log *slog.Logger) *Backfill {
 	return &Backfill{
 		store: store, classifier: classifier, breaker: breaker,
-		budget: budget, log: log, now: time.Now,
+		budget: budget, groupLimit: groupLimit, log: log, now: time.Now,
 	}
 }
 
 // Tick — один проход. Если breaker открыт или бюджет исчерпан, тик
-// пропускается целиком, без единого сетевого вызова (§12).
+// пропускается целиком, без единого сетевого вызова.
 func (w *Backfill) Tick(ctx context.Context) {
 	// Паника на одной записи не должна ронять процесс вместе с ботом.
 	defer func() {
@@ -89,7 +91,7 @@ func (w *Backfill) process(ctx context.Context, tx storage.Transaction) {
 		Name:    tx.PayerName,
 	}
 	res, err := w.classifier.Classify(ctx, classify.Scope{
-		Payer: payer, Dict: g, Usage: g,
+		Payer: payer, Dict: g, Usage: g, Quota: w.groupQuota(g),
 	}, tx.RawText)
 	if err != nil {
 		w.log.Warn("добор не удался", "err", err, "tx", tx.ID)
@@ -129,12 +131,21 @@ func (w *Backfill) process(ctx context.Context, tx storage.Transaction) {
 	}
 	w.remember(ctx, g, tx.PayerUserID, item)
 
-	// Деградированный путь сохраняет только первую сумму (§8). Остальные
+	// Деградированный путь сохраняет только первую сумму. Остальные
 	// траты того же сообщения дошли до нас в raw_text — теперь, когда модель
 	// ответила, их надо записать, иначе они потеряны навсегда.
 	w.saveMissing(ctx, g, tx, res.Items, item)
 
 	w.log.Info("категория добрана", "tx", tx.ID, "вид", item.Kind)
+}
+
+// groupQuota — тот же месячный потолок группы, что и у бота: воркер жжёт
+// те же токены, и обходить потолок ему незачем.
+func (w *Backfill) groupQuota(g *storage.GroupStore) classify.Budgetable {
+	if w.groupLimit <= 0 {
+		return nil
+	}
+	return classify.NewBudget(w.groupLimit, g, nil, w.log)
 }
 
 // saveMissing дописывает траты из того же сообщения, которых не хватало.

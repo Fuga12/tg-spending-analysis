@@ -101,7 +101,7 @@ func openSQL(dsn string) (*sql.DB, error) {
 	return stdlib.OpenDB(*connCfg), nil
 }
 
-// gooseLogger уводит вывод goose в slog: логи должны быть однородными (§0).
+// gooseLogger уводит вывод goose в slog: логи должны быть однородными.
 type gooseLogger struct{}
 
 func (gooseLogger) Printf(format string, v ...any) {

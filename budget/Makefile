@@ -1,13 +1,18 @@
-.PHONY: build run test test-db lint migrate-up migrate-down db-up db-down compose-up compose-down
+.PHONY: build web run test test-db lint migrate-up migrate-down db-up db-down compose-up compose-down
 
 BIN := bot
 # Отдельная база: тесты делают truncate, и указывать сюда боевую нельзя —
 # один make test-db стёр бы историю трат.
 TEST_DATABASE_URL ?= postgres://budget:budget@127.0.0.1:5433/budget_test?sslmode=disable
 
-build:
+# Фронт собирается до бинаря: он уезжает в него через embed, и бинарь,
+# собранный поверх старого dist, молча отдаёт старое приложение.
+build: web
 	go build -o $(BIN) ./cmd/bot
 	go build -o classify-test ./cmd/classify-test
+
+web:
+	cd web && npm ci && npm run build
 
 run:
 	go run ./cmd/bot

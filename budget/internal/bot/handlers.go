@@ -66,7 +66,7 @@ func (b *Bot) onStart(c tele.Context) error {
 	return c.Send(text, sendOptions(markup)...)
 }
 
-// onText — основной сценарий: свободный текст превращается в траты (§9).
+// onText — основной сценарий: свободный текст превращается в траты.
 func (b *Bot) onText(c tele.Context) error {
 	sender := c.Sender()
 	text := strings.TrimSpace(c.Text())
@@ -96,9 +96,17 @@ func (b *Bot) onText(c tele.Context) error {
 	}
 	group := b.store.ForGroup(member.GroupID)
 
+	// Потолок стоит до разбора, а не после: смысл в том, чтобы не ходить
+	// в сеть, а не в том, чтобы не сохранять.
+	if !b.limiter.allow(sender.ID) {
+		b.log.Warn("суточный потолок сообщений исчерпан", "user_id", sender.ID)
+		return c.Send("На сегодня хватит — столько сообщений за сутки я не разбираю. Завтра снова.")
+	}
+
 	classifyCtx, cancelClassify := b.classifyCtx()
 	res, err := b.classifier.Classify(classifyCtx, classify.Scope{
 		Payer: member, Dict: group, Usage: group,
+		Quota: b.groupQuota(group),
 	}, text)
 	cancelClassify()
 	if err != nil {
@@ -166,7 +174,16 @@ func parseCommand(text string) (name, payload string) {
 	return strings.ToLower(name), strings.TrimSpace(payload)
 }
 
-// save записывает трату и запоминает слова описания в личном словаре (§8).
+// groupQuota — месячный потолок токенов этой группы. Nil, если потолок
+// выключен: до открытия бота считать по группам незачем.
+func (b *Bot) groupQuota(g *storage.GroupStore) classify.Budgetable {
+	if b.cfg.LLMGroupTokenBudget <= 0 {
+		return nil
+	}
+	return classify.NewBudget(b.cfg.LLMGroupTokenBudget, g, nil, b.log)
+}
+
+// save записывает трату и запоминает слова описания в личном словаре.
 func (b *Bot) save(ctx context.Context, g *storage.GroupStore, member storage.Member,
 	raw string, item classify.Item, cats []storage.Category, now time.Time) (storage.Transaction, error) {
 	tx := storage.Transaction{
@@ -197,7 +214,7 @@ func (b *Bot) save(ctx context.Context, g *storage.GroupStore, member storage.Me
 }
 
 // rememberWords кладёт слова описания в личный словарь, чтобы в следующий раз
-// ответ пришёл мгновенно и без обращения к API (§8).
+// ответ пришёл мгновенно и без обращения к API.
 //
 // Запоминаются только расходы: быстрый путь всегда собирает expense, и
 // запомненный доход или перевод во второй раз записался бы тратой.

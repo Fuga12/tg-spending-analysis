@@ -262,7 +262,7 @@ func TestDeleteIsSoftAndReversible(t *testing.T) {
 		t.Error("удалённая трата не должна читаться")
 	}
 
-	// Строка осталась: удаление только мягкое (§3).
+	// Строка осталась: удаление только мягкое.
 	var deleted int
 	if err := s.pool.QueryRow(ctx,
 		`select count(*) from transactions where id = $1 and deleted_at is not null`, id).Scan(&deleted); err != nil {

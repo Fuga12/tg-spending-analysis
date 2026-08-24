@@ -14,7 +14,7 @@ type DayTotal struct {
 }
 
 // DailyExpenses считает расходы по дням. Группировка в таймзоне бота: если
-// резать по UTC, вечерние траты уезжают на день вперёд (webapp-design.md §3.9).
+// резать по UTC, вечерние траты уезжают на день вперёд.
 func (g *GroupStore) DailyExpenses(ctx context.Context, from, to time.Time, tz string) ([]DayTotal, error) {
 	rows, err := g.pool.Query(ctx, `
 		select to_char((spent_at at time zone $4)::date, 'YYYY-MM-DD') as day,
@@ -85,4 +85,18 @@ func (g *GroupStore) MonthlyExpenses(ctx context.Context, from, to time.Time, tz
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// TotalExpenses — сумма расходов за отрезок. Нужна сравнению месяцев:
+// раскладывать по категориям ради одного числа незачем.
+func (g *GroupStore) TotalExpenses(ctx context.Context, from, to time.Time) (decimal.Decimal, error) {
+	var amount string
+	err := g.pool.QueryRow(ctx, `
+		select coalesce(sum(amount), 0)::text from transactions
+		where group_id = $1 and deleted_at is null and kind = 'expense'
+		  and spent_at >= $2 and spent_at < $3`, g.groupID, from, to).Scan(&amount)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return decimal.NewFromString(amount)
 }

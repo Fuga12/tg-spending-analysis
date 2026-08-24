@@ -70,7 +70,7 @@ func TestSecondTimeResolvesFromCache(t *testing.T) {
 		t.Fatalf("первый разбор должен идти в модель: source=%s calls=%d", first.Source, llm.calls)
 	}
 
-	// Так же, как это делает обработчик бота после успешной записи (§8).
+	// Так же, как это делает обработчик бота после успешной записи.
 	for _, w := range first.Items[0].Words {
 		if err := group.UpsertWord(ctx, member.UserID, w, *first.Items[0].CategoryID,
 			nil, storage.SourceLLM); err != nil {

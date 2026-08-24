@@ -37,7 +37,7 @@ func TestBreakerOpensAfterThreeErrors(t *testing.T) {
 	b.Record(quotaErr())
 
 	if b.Allow() {
-		t.Error("после трёх подряд ошибок quota сетевых вызовов быть не должно (§7)")
+		t.Error("после трёх подряд ошибок quota сетевых вызовов быть не должно")
 	}
 	if open, until := b.State(); !open || until.IsZero() {
 		t.Errorf("состояние = открыт %v до %v, ожидался открытый breaker", open, until)
@@ -47,7 +47,7 @@ func TestBreakerOpensAfterThreeErrors(t *testing.T) {
 func TestBreakerCountsOnlyServiceErrors(t *testing.T) {
 	b, _ := newTestBreaker()
 
-	// Ответ не по схеме — это не «API недоступен», в счётчик он не идёт (§7).
+	// Ответ не по схеме — это не «API недоступен», в счётчик он не идёт.
 	for i := 0; i < 5; i++ {
 		b.Record(&Error{Kind: storage.ErrKindSchema, Err: errors.New("не по схеме")})
 	}
@@ -126,7 +126,7 @@ func TestOpenBreakerSkipsNetworkAndDegrades(t *testing.T) {
 
 	res, err := svc.Classify(context.Background(), emptyScope(), "600 лимонад")
 	if err != nil {
-		t.Fatalf("запись не должна теряться ни при каких условиях (§8): %v", err)
+		t.Fatalf("запись не должна теряться ни при каких условиях: %v", err)
 	}
 	if llm.calls != 0 {
 		t.Errorf("при открытом breaker сетевых вызовов быть не должно, было %d", llm.calls)
@@ -162,7 +162,7 @@ func TestAPIFailureDegradesInsteadOfLosingRecord(t *testing.T) {
 
 	res, err := svc.Classify(context.Background(), emptyScope(), "вчера пятёрочка 1200")
 	if err != nil {
-		t.Fatalf("потеря записи из-за отказа API недопустима (§8): %v", err)
+		t.Fatalf("потеря записи из-за отказа API недопустима: %v", err)
 	}
 	assertDegraded(t, res, "1200")
 	if res.Items[0].Description != "вчера пятёрочка" {
@@ -253,7 +253,7 @@ func TestBreakerNeverSticksOpen(t *testing.T) {
 
 func TestBudgetCheckedBeforeBreakerProbe(t *testing.T) {
 	// Исчерпанный бюджет не должен съедать пробную попытку breaker: иначе
-	// с наступлением нового месяца сеть так и не откроется (§7).
+	// с наступлением нового месяца сеть так и не откроется.
 	b, c := newTestBreaker()
 	for i := 0; i < 3; i++ {
 		b.Record(quotaErr())

@@ -1,4 +1,5 @@
-// Package report считает месячный отчёт: четыре блока из §10.
+// Package report считает месячный отчёт: итог, категории, кто платил и на
+// кого ушло.
 //
 // SQL сознательно простой — из базы приезжают строки (плательщик, получатели,
 // сумма), а раскладка «на кого ушло» считается здесь.
@@ -14,7 +15,7 @@ import (
 	"budget/internal/storage"
 )
 
-// NoCategory — как называется отсутствующая категория в отчёте (§10).
+// NoCategory — как называется отсутствующая категория в отчёте.
 const NoCategory = "Без категории"
 
 // CommonBucket — доля трат на всю группу. Она стоит отдельной строкой, а не
@@ -30,7 +31,7 @@ const UnknownMember = "Кто-то ещё"
 type Line struct {
 	// ID — идентификатор участника для строк «кто платил» и «на кого ушло».
 	// Ноль у категорий и корзины «Общее». Фронт по нему назначает цвет:
-	// смотрящий всегда первый слот (webapp-design.md §3.6).
+	// смотрящий всегда первый слот.
 	ID      int64
 	Key     string
 	Name    string
@@ -48,7 +49,7 @@ type Month struct {
 	Beneficiaries []Line
 }
 
-// MonthRange — границы месяца в нужной таймзоне. В базу уходят как UTC (§10).
+// MonthRange — границы месяца в нужной таймзоне. В базу уходят как UTC.
 func MonthRange(year int, month time.Month, loc *time.Location) (from, to time.Time) {
 	from = time.Date(year, month, 1, 0, 0, 0, 0, loc)
 	return from, from.AddDate(0, 1, 0)
@@ -162,7 +163,7 @@ func memberSums(sums map[int64]decimal.Decimal, members []storage.Member) []Line
 }
 
 // sortedLines сортирует по убыванию суммы и считает доли от общего итога.
-// Нулевой итог означает, что проценты в этом блоке не показываются (§10).
+// Нулевой итог означает, что проценты в этом блоке не показываются.
 func sortedLines(lines []Line, total decimal.Decimal) []Line {
 	sort.SliceStable(lines, func(i, j int) bool {
 		if c := lines[i].Amount.Cmp(lines[j].Amount); c != 0 {
@@ -181,7 +182,7 @@ func sortedLines(lines []Line, total decimal.Decimal) []Line {
 }
 
 // ComparableRange — отрезок прошлого месяца, с которым честно сравнивать
-// текущий (webapp-design.md §3.3).
+// текущий.
 //
 // Правила: незакрытый месяц сравнивается с тем же числом дней прошлого, но
 // не больше, чем в прошлом месяце вообще есть — иначе 31 июля сравнивалось бы

@@ -140,3 +140,28 @@ func TestAppURL(t *testing.T) {
 		})
 	}
 }
+
+func TestOwnerIsSeparateFromWhitelist(t *testing.T) {
+	// При открытом боте whitelist пуст, и владельца в нём не оказывалось —
+	// предупреждение о потолке уходило в никуда.
+	open := &Config{Owner: 777}
+	if open.OwnerID() != 777 {
+		t.Errorf("владелец = %d, ожидался 777 при пустом whitelist", open.OwnerID())
+	}
+
+	// OWNER_ID приоритетнее списка: совпадение с первым id было совпадением,
+	// а не правилом.
+	both := &Config{Owner: 777, AllowedUserIDs: []int64{111, 222}}
+	if both.OwnerID() != 777 {
+		t.Errorf("владелец = %d, ожидался явный OWNER_ID", both.OwnerID())
+	}
+
+	// Без OWNER_ID прежнее поведение сохраняется.
+	legacy := &Config{AllowedUserIDs: []int64{111, 222}}
+	if legacy.OwnerID() != 111 {
+		t.Errorf("владелец = %d, ожидался первый из whitelist", legacy.OwnerID())
+	}
+	if (&Config{}).OwnerID() != 0 {
+		t.Error("без владельца служебные уведомления отправлять некому")
+	}
+}

@@ -10,7 +10,7 @@ import (
 	"budget/internal/tokens"
 )
 
-// Validate приводит ответ модели к тому, что можно записать в базу (§8).
+// Validate приводит ответ модели к тому, что можно записать в базу.
 // Выполняется всегда, даже если ответ прошёл JSON-схему: схема гарантирует
 // форму, но не смысл.
 func Validate(raw []RawItem, req Request, log *slog.Logger) []Item {

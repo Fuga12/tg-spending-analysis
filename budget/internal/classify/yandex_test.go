@@ -130,7 +130,7 @@ func TestYandexRequestShape(t *testing.T) {
 		t.Error("в системном промпте нет few-shot примеров")
 	}
 
-	// Enum категорий генерируется из таблицы, а не из константы (§6).
+	// Enum категорий генерируется из таблицы, а не из константы.
 	enum := got.ResponseFormat.JSONSchema.Schema.Properties.Items.Items.Properties.Category.Enum
 	if len(enum) != len(testCategories()) || enum[0] != "Продукты" {
 		t.Errorf("enum категорий = %v, ожидался список из таблицы categories", enum)
@@ -262,7 +262,7 @@ func TestYandexRetriesOnce5xx(t *testing.T) {
 	if calls != 2 {
 		t.Errorf("запросов %d, ожидались две попытки", calls)
 	}
-	// Каждая попытка — своя строка расхода, даже неуспешная (§6).
+	// Каждая попытка — своя строка расхода, даже неуспешная.
 	if rows := usage.all(); len(rows) != 2 || rows[0].OK || rows[0].ErrorKind != storage.ErrKindHTTP {
 		t.Errorf("расход записан неверно: %+v", rows)
 	}
@@ -280,7 +280,7 @@ func TestYandexDoesNotRetryQuota(t *testing.T) {
 		t.Errorf("вид ошибки = %q, ожидался quota", ErrKind(err))
 	}
 	if calls != 1 {
-		t.Errorf("запросов %d — ошибку квоты повтор не лечит (§6)", calls)
+		t.Errorf("запросов %d — ошибку квоты повтор не лечит", calls)
 	}
 	if rows := usage.all(); len(rows) != 1 || rows[0].ErrorKind != storage.ErrKindQuota {
 		t.Errorf("расход записан неверно: %+v", rows)
@@ -295,7 +295,7 @@ func TestYandexQuotaDetectedByBody(t *testing.T) {
 
 	_, err := y.Parse(context.Background(), usage, testRequest("600 лимонад", testCategories()))
 	if ErrKind(err) != storage.ErrKindQuota {
-		t.Errorf("вид ошибки = %q, упоминание квоты в теле — тоже quota (§7)", ErrKind(err))
+		t.Errorf("вид ошибки = %q, упоминание квоты в теле — тоже quota", ErrKind(err))
 	}
 }
 
@@ -311,7 +311,7 @@ func TestYandexBrokenContentIsSchemaError(t *testing.T) {
 		t.Errorf("вид ошибки = %q, ожидался schema", ErrKind(err))
 	}
 	if calls != 1 {
-		t.Errorf("запросов %d — ответ не по схеме ретраем не лечится (§7)", calls)
+		t.Errorf("запросов %d — ответ не по схеме ретраем не лечится", calls)
 	}
 	// Токены потрачены, значит записаны — но вызов неуспешный, и вид ошибки
 	// должен быть виден в /лимит.
@@ -340,7 +340,7 @@ func TestYandexEmptyChoicesIsSchemaError(t *testing.T) {
 
 func TestYandex5xxWithLimitInBodyStaysHTTP(t *testing.T) {
 	// «rate limit» в теле пятисотки — это поломка сервиса, а не исчерпанная
-	// квота: иначе ретрая не будет, а breaker откроется на полчаса (§7).
+	// квота: иначе ретрая не будет, а breaker откроется на полчаса.
 	var calls int
 	y, usage, _ := newTestYandex(t, func(w http.ResponseWriter, _ *http.Request) {
 		calls++
@@ -400,7 +400,7 @@ func TestYandexTimeout(t *testing.T) {
 
 func TestYandexBadKeyCountsTowardsBreaker(t *testing.T) {
 	// Неверный ключ: повторять бессмысленно, но копиться в breaker обязано,
-	// иначе бот долбится в сеть на каждое сообщение (§13, проверка фазы 3).
+	// иначе бот долбится в сеть на каждое сообщение.
 	var calls int
 	y, usage, _ := newTestYandex(t, func(w http.ResponseWriter, _ *http.Request) {
 		calls++

@@ -25,7 +25,7 @@ func TestBudgetStopsAtCeiling(t *testing.T) {
 	b := NewBudget(2_000_000, store, nil, quietLog())
 
 	if b.Allow(context.Background()) {
-		t.Error("на потолке сетевые вызовы должны прекращаться (§7)")
+		t.Error("на потолке сетевые вызовы должны прекращаться")
 	}
 }
 
@@ -49,7 +49,7 @@ func TestBudgetWarnsOnceAtEightyPercent(t *testing.T) {
 		}
 	}
 	if len(sent) != 1 {
-		t.Fatalf("отправлено уведомлений %d, ожидалось одно за месяц (§7)", len(sent))
+		t.Fatalf("отправлено уведомлений %d, ожидалось одно за месяц", len(sent))
 	}
 }
 

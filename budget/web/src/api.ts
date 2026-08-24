@@ -1,199 +1,189 @@
-// Обёртка над fetch. Знает про 401 (увести на экран входа) и про то, что
-// под /api всё отвечает JSON.
+// Клиент API. Деньги — строками: в JSON число это float64, и через float
+// деньги гонять нельзя.
 
-export class Unauthorized extends Error {}
-
-/** 409: запись изменили, пока её правили. Несёт текущее состояние. */
-export class Conflict extends Error {
-  constructor(public current: Tx) {
-    super("запись изменилась");
-  }
-}
-
-export type Beneficiary = string;
-
-export type BeneficiaryGroup = {
+export type Member = {
   id: number;
+  user_id: number;
   name: string;
-  key: string;
+  role: "admin" | "member";
+  left?: boolean;
+  avatar_at?: string;
 };
 
 export type Category = {
   id: number;
   name: string;
-  beneficiary: Beneficiary;
   hint: string;
-  /** Адресат-человек. Заполнен — перебивает beneficiary. */
-  user_id: number | null;
+  template_key?: string;
+  default_to: number | null;
+  sort_order: number;
 };
 
-export type Person = {
+export type Invite = {
   id: number;
-  name: string;
-  dative: string;
-  /** Метка своего фото; пустая — своего нет, аватарка берётся у Telegram. */
-  avatar_version: string;
+  group_name: string;
+  inviter: string;
+  expires_at: string;
 };
 
-export type Me = {
+export type Group = {
   id: number;
   name: string;
-  /** «Илье», «Уле» — падеж считает сервер, чтобы правила жили в одном месте. */
-  dative: string;
-  avatar_version: string;
-  partner: Person | null;
+  /** Про смотрящего: по ним решается, показывать ли «пригласить». */
+  member_id: number;
+  role: "admin" | "member";
+};
+
+export type State = {
+  me: { id: number; name: string; avatar_at?: string };
+  group: Group | null;
+  members: Member[];
+  categories: Category[];
+  invites: Invite[];
+  max_members: number;
 };
 
 export type Tx = {
   id: number;
-  day: string;
+  payer: number;
+  /** Пустой список означает «на всю группу», а не «неизвестно». */
+  recipients: number[];
+  kind: "expense" | "income" | "transfer";
   amount: string;
   description: string;
   category_id: number | null;
-  category: string;
-  payer_id: number;
-  beneficiary: string;
-  kind: "expense" | "income" | "transfer";
-  spent_at: string;
   raw_text: string;
-  needs_review: boolean;
-  updated_at: string | null;
-  mine: boolean;
+  spent_at: string;
+  updated_at?: string;
+  needs_review?: boolean;
+  pending?: boolean;
 };
 
-export type TxPage = { items: Tx[]; total: number; has_more: boolean };
-
-export type Line = { id: number; key: string; name: string; amount: string; percent: number; delta?: string };
-
-export type DayPoint = { day: string; amount: string };
-export type MonthPoint = { year: number; month: number; amount: string };
-
-export type Compare = {
-  days: number;
-  previous: string;
-  percent: number;
-  has_percent: boolean;
-  difference: string;
-  partial: boolean;
-};
+export type Line = { id: number; key: string; name: string; amount: string; percent: number };
 
 export type MonthReport = {
   year: number;
   month: number;
   total: string;
-	recipient_total?: string;
-  compare: Compare | null;
   categories: Line[];
   payers: Line[];
   beneficiaries: Line[];
-  pending: number;
+  compare: { previous: string; current: string; days: number; partial: boolean } | null;
+  review: number;
 };
 
-async function get<T>(path: string): Promise<T> {
-  let resp: Response;
-  try {
-    resp = await fetch(path, { credentials: "same-origin" });
-  } catch {
-    // Сообщение браузера («Failed to fetch») человеку ничего не говорит.
-    throw new Error("Сервер не отвечает");
+export type DayPoint = { day: string; amount: string };
+export type MonthPoint = { year: number; month: number; amount: string };
+
+/** Отказ сервера с текстом, который можно показать человеку. */
+export class ApiError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
   }
-  if (resp.status === 401) throw new Unauthorized("нужен вход");
-  if (!resp.ok) {
-    const body = await resp.json().catch(() => ({ error: "" }));
-    throw new Error(body.error || `ошибка ${resp.status}`);
-  }
-  return resp.json() as Promise<T>;
 }
 
-async function send<T>(method: string, path: string, body: unknown): Promise<T> {
-  let resp: Response;
-  try {
-    resp = await fetch(path, {
-      method,
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-  } catch {
-    throw new Error("Сервер не отвечает");
-  }
-  if (resp.status === 401) throw new Unauthorized("нужен вход");
+type Telegram = {
+  initData: string;
+  ready: () => void;
+  expand: () => void;
+  colorScheme?: string;
+  HapticFeedback?: { impactOccurred: (style: string) => void };
+  showConfirm?: (message: string, cb: (ok: boolean) => void) => void;
+};
 
-  const text = await resp.text();
-  const data = text ? JSON.parse(text) : {};
-  if (resp.status === 409 && data.current) throw new Conflict(data.current as Tx);
-  if (!resp.ok) throw new Error(data.error || `ошибка ${resp.status}`);
-  return data as T;
+/** Telegram кладёт себя в window до загрузки скриптов приложения. */
+export const tg: Telegram | undefined = (window as any).Telegram?.WebApp;
+
+async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = {};
+  // Подпись едет заголовком, а не параметром адреса: в адресе она осела бы
+  // в логах прокси и в истории браузера.
+  if (tg?.initData) headers.Authorization = `tma ${tg.initData}`;
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+
+  const res = await fetch(path, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+  if (res.status === 204) return undefined as T;
+  const text = await res.text();
+  if (!res.ok) {
+    let message = "Что-то пошло не так.";
+    try {
+      message = JSON.parse(text).error ?? message;
+    } catch {
+      /* сервер ответил не JSON — показываем общую фразу */
+    }
+    throw new ApiError(res.status, message);
+  }
+  return text ? (JSON.parse(text) as T) : (undefined as T);
 }
+
+const qs = (params: Record<string, string | number | undefined>) => {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== "" && v !== 0) q.set(k, String(v));
+  }
+  const s = q.toString();
+  return s ? `?${s}` : "";
+};
+
+export type TxFilter = {
+  from?: string;
+  to?: string;
+  payer?: number;
+  /** Число — участник, "common" — трата на всю группу. */
+  recipient?: number | "common";
+  category?: number;
+  kind?: string;
+  pending?: boolean;
+  q?: string;
+  limit?: number;
+  offset?: number;
+};
 
 export const api = {
-  me: () => get<Me>("/api/me"),
+  state: () => call<State>("GET", "/api/state"),
 
-  categories: () => get<Category[]>("/api/categories"),
-
-  beneficiaryGroups: () => get<BeneficiaryGroup[]>("/api/beneficiary-groups"),
-
-  createBeneficiaryGroup: (name: string) =>
-    send<BeneficiaryGroup>("POST", "/api/beneficiary-groups", { name }),
-
-  patchBeneficiaryGroup: (id: number, name: string) =>
-    send<BeneficiaryGroup>("PATCH", `/api/beneficiary-groups/${id}`, { name }),
-
-  deleteBeneficiaryGroup: (id: number) =>
-    send<{ ok: boolean }>("DELETE", `/api/beneficiary-groups/${id}`, undefined),
-
-  patchCategory: (
-    id: number,
-    body: { name: string; hint: string; beneficiary: string; user_id: number | null },
-  ) =>
-    send<Category>("PATCH", `/api/categories/${id}`, body),
-
-  createCategory: (body: {
-    name: string;
-    hint: string;
-    beneficiary: string;
-    user_id: number | null;
-  }) =>
-    send<Category>("POST", "/api/categories", body),
-
-  /** Своё фото профиля: base64 из canvas. Телеграмным не перебивается. */
-  setAvatar: (photo: string) =>
-    send<{ avatar_version: string }>("PUT", "/api/avatar", { photo }),
-
-  clearAvatar: () => send<{ avatar_version: string }>("DELETE", "/api/avatar", undefined),
-
-  daily: (year: number, month: number) =>
-    get<DayPoint[]>(`/api/report/daily?year=${year}&month=${month}`),
-
-  months: () => get<MonthPoint[]>("/api/report/months"),
-
-  patch: (id: number, body: Record<string, unknown>) =>
-    send<Tx>("PATCH", `/api/transactions/${id}`, body),
-
-  create: (body: Record<string, unknown>) => send<Tx>("POST", "/api/transactions", body),
-
-  remove: (id: number) => send<{ ok: boolean }>("DELETE", `/api/transactions/${id}`, undefined),
-
-  restore: (id: number) => send<Tx>("PATCH", `/api/transactions/${id}`, { deleted: false }),
-
-  month: (year: number, month: number, recipient = "") => {
-	const q = new URLSearchParams({ year: String(year), month: String(month) });
-	if (recipient) q.set("recipient", recipient);
-	return get<MonthReport>(`/api/report/month?${q}`);
+  setName: (name: string) => call<void>("POST", "/api/me/name", { name }),
+  clearAvatar: () => call<void>("DELETE", "/api/me/avatar"),
+  setAvatar: async (blob: Blob) => {
+    const headers: Record<string, string> = { "Content-Type": "image/jpeg" };
+    if (tg?.initData) headers.Authorization = `tma ${tg.initData}`;
+    const res = await fetch("/api/me/avatar", { method: "POST", headers, body: blob });
+    if (!res.ok) throw new ApiError(res.status, "Не смог сохранить фото.");
+    return (await res.json()) as { avatar_at: string };
   },
+  avatarURL: (userID: number, version?: string) =>
+    `/api/avatar/${userID}${version ? `?v=${encodeURIComponent(version)}` : ""}`,
 
-  transactions: (params: Record<string, string | number | undefined>) => {
-    const q = new URLSearchParams();
-    for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== "") q.set(k, String(v));
-    }
-    return get<TxPage>(`/api/transactions?${q}`);
-  },
+  createGroup: (name: string) => call<Group>("POST", "/api/group", { name }),
+  invite: (userID: number) => call<Invite>("POST", "/api/group/invite", { user_id: userID }),
+  leave: () => call<void>("POST", "/api/group/leave"),
+  setRole: (memberID: number, role: string) =>
+    call<void>("PATCH", `/api/group/members/${memberID}`, { role }),
+  removeMember: (memberID: number) => call<void>("DELETE", `/api/group/members/${memberID}`),
 
-  logout: async (everywhere = false) => {
-    await fetch(`/api/session${everywhere ? "?all=1" : ""}`, {
-      method: "DELETE",
-      credentials: "same-origin",
-    });
-  },
+  acceptInvite: (id: number) => call<{ group_id: number }>("POST", `/api/invites/${id}/accept`),
+  declineInvite: (id: number) => call<void>("POST", `/api/invites/${id}/decline`),
+
+  transactions: (f: TxFilter) =>
+    call<{ items: Tx[]; total: number }>("GET", `/api/transactions${qs(f as any)}`),
+  updateTx: (id: number, patch: Record<string, unknown>) =>
+    call<Tx>("PATCH", `/api/transactions/${id}`, patch),
+  deleteTx: (id: number) => call<void>("DELETE", `/api/transactions/${id}`),
+  restoreTx: (id: number) => call<Tx>("POST", `/api/transactions/${id}/restore`),
+
+  createCategory: (name: string, hint: string, defaultTo: number | null) =>
+    call<Category>("POST", "/api/categories", { name, hint, default_to: defaultTo }),
+  updateCategory: (id: number, name: string, hint: string, defaultTo: number | null) =>
+    call<void>("PATCH", `/api/categories/${id}`, { name, hint, default_to: defaultTo }),
+
+  month: (year: number, month: number) =>
+    call<MonthReport>("GET", `/api/report/month${qs({ year, month })}`),
+  days: (year: number, month: number) =>
+    call<DayPoint[]>("GET", `/api/report/days${qs({ year, month })}`),
+  months: () => call<MonthPoint[]>("GET", "/api/report/months"),
 };

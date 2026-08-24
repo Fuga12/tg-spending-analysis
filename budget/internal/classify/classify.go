@@ -1,8 +1,8 @@
 // Package classify превращает сообщение пользователя в набор транзакций.
 //
-// Порядок один и тот же всегда: сначала кэш-резолвер (§5), он отвечает
-// мгновенно и без сети; если не сработал — LLM (§6); что бы ни вернула
-// модель, результат проходит детерминированную валидацию (§8).
+// Порядок один и тот же всегда: сначала кэш-резолвер, он отвечает
+// мгновенно и без сети; если не сработал — LLM; что бы ни вернула
+// модель, результат проходит детерминированную валидацию.
 package classify
 
 import (
@@ -25,7 +25,7 @@ const (
 	KindTransfer = "transfer"
 )
 
-// FallbackCategory — куда падает всё, что не разобрали (§8).
+// FallbackCategory — куда падает всё, что не разобрали.
 //
 // Ищется по ключу шаблона, а не по имени: группа вправе переименовать
 // «Прочее» во что угодно, и поиск по имени после этого возвращал бы nil,
@@ -54,16 +54,16 @@ type Item struct {
 	Recipients []int64
 
 	// Words — значимые слова описания, их запоминает кэш после успешного
-	// разбора (§8). Для деградированного результата пусто.
+	// разбора. Для деградированного результата пусто.
 	Words []string
 
 	// NeedsClassification — запись сохранена, но категорию поставит воркер
-	// добора: LLM не ответил или был недоступен (§8).
+	// добора: LLM не ответил или был недоступен.
 	NeedsClassification bool
 }
 
-// Source — каким путём получен результат. Нужен для метрики скорости (§5)
-// и для команды /лимит (§7).
+// Source — каким путём получен результат. Нужен для метрики скорости
+// и для команды /лимит.
 type Source string
 
 const (
@@ -74,13 +74,14 @@ const (
 
 // Причины деградации. Различать их обязан воркер добора: запись, которой не
 // хватило сети, надо повторить позже, а запись, которую модель разбирать
-// отказывается, — закрыть, иначе она будет возвращаться вечно (§12).
+// отказывается, — закрыть, иначе она будет возвращаться вечно.
 const (
 	ReasonNoNetwork  = "сеть недоступна"
 	ReasonNoAnswer   = "модель не ответила"
 	ReasonUnusable   = "после валидации не осталось элементов"
 	ReasonNoCategory = "категории недоступны"
 	ReasonNoMembers  = "состав группы недоступен"
+	ReasonGroupQuota = "потолок токенов группы исчерпан"
 )
 
 // Result — итог разбора одного сообщения.
@@ -92,7 +93,7 @@ type Result struct {
 	Reason string
 }
 
-// ErrNoAmount — в сообщении нет ни одного числа, сохранять нечего (§8).
+// ErrNoAmount — в сообщении нет ни одного числа, сохранять нечего.
 var ErrNoAmount = errors.New("в сообщении нет суммы")
 
 // Dict — то, что классификатору нужно от хранилища группы.
@@ -115,6 +116,12 @@ type Scope struct {
 	// Usage — куда писать расход токенов этой группы. В боевом коде это тот
 	// же *storage.GroupStore, что и Dict.
 	Usage UsageRecorder
+	// Quota — потолок токенов этой группы. Nil означает «без потолка».
+	//
+	// Общий потолок защищает сервис от собственных багов, а групповой — от
+	// чужих групп: пока бот открыт, их сообщения жгут один и тот же грант,
+	// и без разбивки первая же активная группа выбирает его целиком.
+	Quota Budgetable
 }
 
 // Request — всё, что модели нужно знать о группе, чтобы разобрать сообщение.
@@ -138,13 +145,13 @@ type LLM interface {
 	Parse(ctx context.Context, usage UsageRecorder, req Request) ([]RawItem, error)
 }
 
-// Breakable — предохранители, стоящие перед сетевым вызовом (§7).
+// Breakable — предохранители, стоящие перед сетевым вызовом.
 type Breakable interface {
 	Allow() bool
 	Record(err error)
 }
 
-// Budgetable — месячный потолок токенов (§7).
+// Budgetable — месячный потолок токенов.
 type Budgetable interface {
 	Allow(ctx context.Context) bool
 }
@@ -169,7 +176,7 @@ func NewService(llm LLM, breaker Breakable, budget Budgetable, log *slog.Logger)
 //
 // Единственная ошибка, которую метод возвращает, — ErrNoAmount: сохранять
 // тогда нечего. Во всех остальных случаях результат есть, пусть и
-// деградированный. Потеря записи из-за недоступности API недопустима (§8).
+// деградированный. Потеря записи из-за недоступности API недопустима.
 func (s *Service) Classify(ctx context.Context, sc Scope, text string) (*Result, error) {
 	// Ноль и минус тратой быть не могут — в базе стоит check (amount > 0),
 	// и деградированный путь такую запись всё равно не сохранил бы.
@@ -205,6 +212,10 @@ func (s *Service) Classify(ctx context.Context, sc Scope, text string) (*Result,
 	if !s.budget.Allow(ctx) {
 		return s.degrade(sc, text, amounts, ReasonNoNetwork), nil
 	}
+	if sc.Quota != nil && !sc.Quota.Allow(ctx) {
+		s.log.Warn("месячный потолок группы исчерпан", "user_id", sc.Payer.UserID)
+		return s.degrade(sc, text, amounts, ReasonGroupQuota), nil
+	}
 	if !s.breaker.Allow() {
 		return s.degrade(sc, text, amounts, ReasonNoNetwork), nil
 	}
@@ -228,7 +239,7 @@ func (s *Service) Classify(ctx context.Context, sc Scope, text string) (*Result,
 }
 
 // degrade собирает запись, которую можно сохранить без модели: сумма — первая
-// из найденных, описание — текст без суммы, категорию поставит воркер (§8).
+// из найденных, описание — текст без суммы, категорию поставит воркер.
 func (s *Service) degrade(sc Scope, text string, amounts []decimal.Decimal, reason string) *Result {
 	description := Describe(text)
 	if description == "" {
@@ -287,7 +298,7 @@ func categoryByID(cats []storage.Category, id int32) *storage.Category {
 }
 
 // Stats — сколько сообщений каким путём разобрано с момента запуска. Нужны
-// команде /лимит: доля быстрого пути — это метрика скорости (§5, §7).
+// команде /лимит: доля быстрого пути — это метрика скорости.
 type Stats struct {
 	Cache    int64
 	LLM      int64

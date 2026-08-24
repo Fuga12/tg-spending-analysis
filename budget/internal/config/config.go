@@ -16,10 +16,14 @@ type Config struct {
 	DatabaseURL string
 	// AllowedUserIDs — кого вообще пускать в бота. Пустой список означает,
 	// что бот открыт: кто с кем ведёт бюджет, решает состав группы, а не эта
-	// настройка. Первый id считается владельцем сервиса.
+	// настройка.
 	AllowedUserIDs []int64
-	TZ             *time.Location
-	ReminderAt     string // "HH:MM"
+	// Owner — кому уходят служебные уведомления. Отдельной переменной, а не
+	// первым из whitelist: при открытом боте whitelist пуст, и владельца
+	// не оказывалось вовсе — предупреждение о потолке уходило в никуда.
+	Owner      int64
+	TZ         *time.Location
+	ReminderAt string // "HH:MM"
 
 	// AppURL — адрес Mini App. Пустой означает, что приложения ещё нет:
 	// бот тогда не показывает ни кнопку под приветствием, ни кнопку меню.
@@ -27,14 +31,30 @@ type Config struct {
 	// быть не может.
 	AppURL string
 
+	// AppListen — где слушает сервер приложения. Пусто — сервер не поднимается.
+	AppListen string
+
+	// AppDevUserID — от чьего имени пускать без подписи Telegram.
+	//
+	// Не удобство, а необходимость: браузерной ветки нет, и без байпаса
+	// приложение нельзя открыть иначе как из Telegram, то есть нельзя
+	// разрабатывать. Ровно поэтому он и опасен — см. громкий лог в app.New.
+	AppDevUserID int64
+
 	YandexAPIKey          string
 	YandexFolderID        string
 	LLMBaseURL            string
 	LLMModel              string
 	LLMTimeout            time.Duration
 	LLMMonthlyTokenBudget int64
-	LLMPricePer1KRub      float64
-	LLMBreakerCooldown    time.Duration
+	// LLMGroupTokenBudget — месячный потолок на одну группу. Ноль выключает
+	// его: до открытия бота считать по группам незачем.
+	LLMGroupTokenBudget int64
+	// MessagesPerDay — сколько сообщений в сутки бот разбирает от одного
+	// человека. Ноль выключает счёт.
+	MessagesPerDay     int
+	LLMPricePer1KRub   float64
+	LLMBreakerCooldown time.Duration
 
 	// Слежение за бэкапами. Пустой BackupDir выключает проверку — так удобнее
 	// локально, где бэкапов и не бывает.
@@ -46,13 +66,26 @@ type Config struct {
 // открытого бота.
 func (c *Config) WhitelistEnabled() bool { return len(c.AllowedUserIDs) > 0 }
 
+// AppEnabled — поднимать ли сервер приложения.
+func (c *Config) AppEnabled() bool { return c.AppListen != "" }
+
+// DevBypass — пускают ли в приложение без подписи Telegram.
+func (c *Config) DevBypass() bool { return c.AppDevUserID != 0 }
+
 // HasApp — есть ли куда вести из бота. Пока приложения нет, кнопки не
 // показываются: кнопка, ведущая в никуда, хуже её отсутствия.
 func (c *Config) HasApp() bool { return c.AppURL != "" }
 
-// OwnerID — первый id из whitelist, ему уходят служебные уведомления.
-// Ноль означает, что владелец не задан и отправлять их некому.
+// OwnerID — кому уходят служебные уведомления. Ноль означает, что владелец
+// не задан и отправлять их некому.
+//
+// OWNER_ID приоритетнее whitelist: список отвечает на вопрос «пускать ли
+// вообще», и совпадение первого id с владельцем было совпадением, а не
+// правилом.
 func (c *Config) OwnerID() int64 {
+	if c.Owner != 0 {
+		return c.Owner
+	}
 	if len(c.AllowedUserIDs) == 0 {
 		return 0
 	}
@@ -88,6 +121,7 @@ func Load() (*Config, error) {
 		ReminderAt:     envDefault("REMINDER_AT", "21:00"),
 		BackupDir:      os.Getenv("BACKUP_DIR"),
 		AppURL:         strings.TrimRight(strings.TrimSpace(os.Getenv("APP_URL")), "/"),
+		AppListen:      strings.TrimSpace(os.Getenv("APP_LISTEN")),
 	}
 
 	// Ошибиться схемой легко, а последствие немое: Telegram просто не откроет
@@ -120,6 +154,13 @@ func Load() (*Config, error) {
 	}
 	c.AllowedUserIDs = allowed
 
+	if c.AppDevUserID, err = envInt64Optional("APP_DEV_USER_ID"); err != nil {
+		return nil, err
+	}
+	if c.Owner, err = envInt64Optional("OWNER_ID"); err != nil {
+		return nil, err
+	}
+
 	loc, err := time.LoadLocation(envDefault("TZ", "Europe/Moscow"))
 	if err != nil {
 		return nil, fmt.Errorf("TZ: %w", err)
@@ -147,6 +188,14 @@ func Load() (*Config, error) {
 	if c.LLMPricePer1KRub, err = envFloat("LLM_PRICE_PER_1K_RUB", 1.0); err != nil {
 		return nil, err
 	}
+	if c.LLMGroupTokenBudget, err = envInt64Default("LLM_GROUP_TOKEN_BUDGET", 200_000); err != nil {
+		return nil, err
+	}
+	messages, err := envInt64Default("MESSAGES_PER_DAY", 200)
+	if err != nil {
+		return nil, err
+	}
+	c.MessagesPerDay = int(messages)
 
 	return c, nil
 }
@@ -226,6 +275,34 @@ func envDuration(name string, def time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("%s: должно быть положительным", name)
 	}
 	return d, nil
+}
+
+// envInt64Optional — необязательное число. Пусто означает «выключено», а не
+// ноль по умолчанию: разница здесь смысловая.
+func envInt64Optional(name string) (int64, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0, nil
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || v <= 0 {
+		return 0, fmt.Errorf("%s: ожидался telegram id, получено %q", name, raw)
+	}
+	return v, nil
+}
+
+// envInt64Default — число с умолчанием, где ноль означает «выключено» и
+// потому допустим.
+func envInt64Default(name string, def int64) (int64, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return def, nil
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || v < 0 {
+		return 0, fmt.Errorf("%s: ожидалось неотрицательное число, получено %q", name, raw)
+	}
+	return v, nil
 }
 
 func envInt64(name string, def int64) (int64, error) {
