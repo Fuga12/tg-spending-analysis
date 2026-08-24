@@ -1,0 +1,13 @@
+# node_modules ставится внутри образа: с машины сюда приедут бинарники под
+# чужую платформу, и esbuild откажется работать.
+web/node_modules
+web/tsconfig.tsbuildinfo
+
+# Собранные на машине артефакты — образ собирает свои.
+bot
+classify-test
+
+.env
+.git
+.github
+*.md

@@ -1,4 +1,4 @@
-.PHONY: build web run test test-db lint migrate-up migrate-down db-up db-down compose-up compose-down
+.PHONY: build web run test test-db lint migrate-up migrate-down db-up db-down compose-up compose-migrate compose-down
 
 BIN := bot
 # Отдельная база: тесты делают truncate, и указывать сюда боевую нельзя —
@@ -40,9 +40,14 @@ db-up:
 db-down:
 	sudo docker compose down
 
-# Пересобрать бинарник и запустить бот с PostgreSQL в Docker Compose.
-compose-up: build
+# Собрать образ и поднять бот с PostgreSQL. Фронт и бинарь собираются внутри
+# образа, поэтому make build здесь не нужен.
+compose-up:
 	sudo docker compose up -d --build
+
+# Миграции в докере: отдельным разовым запуском, а не при старте бота.
+compose-migrate:
+	sudo docker compose run --rm bot -migrate
 
 compose-down:
 	sudo docker compose down

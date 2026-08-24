@@ -9,6 +9,12 @@ import (
 	"syscall"
 	"time"
 
+	// Часовые пояса внутрь бинаря: TZ по умолчанию Europe/Moscow, а образ
+	// distroless и пустые контейнеры базы данных живут без /usr/share/zoneinfo.
+	// Без этого бот падал бы на старте с «unknown time zone» — и только там,
+	// где его запускают в контейнере.
+	_ "time/tzdata"
+
 	"budget/internal/app"
 	"budget/internal/backup"
 	"budget/internal/bot"

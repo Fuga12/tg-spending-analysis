@@ -7,9 +7,11 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: budget
-      POSTGRES_PASSWORD: budget
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задай POSTGRES_PASSWORD в .env}
       POSTGRES_DB: budget
     ports:
+      # Только loopback: наружу база не смотрит. Порт нужен psql и бэкапу,
+      # которые ходят с машины, а не из контейнера.
       - "127.0.0.1:5433:5432"
     volumes:
       - budget_pgdata:/var/lib/postgresql/data
@@ -22,18 +24,22 @@ services:
   bot:
     build:
       context: .
-      dockerfile: Dockerfile
     image: strochka-budget-bot:local
     container_name: budget_bot
     restart: unless-stopped
     env_file:
       - .env
-    network_mode: host
-    volumes:
-      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    ports:
+      # Приложение видит только nginx с машины. Внутри контейнера оно обязано
+      # слушать 0.0.0.0 — на 127.0.0.1 порт наружу не пробросить, и это самая
+      # частая ошибка при переезде в докер (см. APP_LISTEN в .env.example).
+      - "127.0.0.1:8081:8081"
     depends_on:
       postgres:
         condition: service_healthy
+    # Остановка последовательная: обработчики бота (45 с) → воркер добора
+    # (45 с). Дефолтных 10 секунд не хватает, а SIGKILL посреди разбора
+    # означает потерянную трату.
     stop_grace_period: 120s
 
 volumes:
