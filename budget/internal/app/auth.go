@@ -84,9 +84,14 @@ func VerifyInitData(initData, botToken string, now time.Time) (TelegramUser, err
 
 	pairs := make([]string, 0, len(values))
 	for key, list := range values {
-		// signature — подпись третьих лиц (Telegram Ads и подобное), в
-		// проверочную строку она не входит наравне с hash.
-		if key == "hash" || key == "signature" {
+		// Исключается только hash — больше ничего.
+		//
+		// Поле signature Telegram добавил позже, для сторонней проверки по
+		// Ed25519, и часть реализаций выбрасывает его из строки наравне
+		// с hash. Это неверно: Telegram считает hash по всем полям, включая
+		// signature. Проверено на живом initData — без него подпись не
+		// сходится, см. тест ниже.
+		if key == "hash" {
 			continue
 		}
 		pairs = append(pairs, key+"="+list[0])
@@ -139,12 +144,12 @@ func hmacSHA256(key []byte, data string) []byte {
 
 // DiagnoseSignature объясняет, почему подпись не сошлась.
 //
-// Только для лога и только при отказе: реализации расходятся в том, входит ли
-// поле signature в проверочную строку — Telegram добавил его позже основного
-// алгоритма, для сторонней проверки. Ошибиться тут легко, а снаружи разницы
-// не видно: и там, и там «подпись не сошлась».
+// Только для лога и только при отказе. Снаружи «не сошлась» выглядит одинаково
+// независимо от причины, а их несколько: чужой токен, лишнее поле в строке,
+// испорченная кодировка. Однажды это уже стоило вечера отладки, поэтому
+// разбор остался в коде.
 //
-// Функция ничего не пускает внутрь. Она перебирает варианты и говорит, какой
+// Функция ничего не пускает внутрь: она перебирает варианты и говорит, какой
 // подошёл бы, чтобы догадку заменить измерением.
 func DiagnoseSignature(initData, botToken string) string {
 	values, err := url.ParseQuery(initData)
@@ -168,8 +173,8 @@ func DiagnoseSignature(initData, botToken string) string {
 		name string
 		skip map[string]bool
 	}{
-		{"без hash и signature (как сейчас)", map[string]bool{"hash": true, "signature": true}},
-		{"без hash, signature внутри", map[string]bool{"hash": true}},
+		{"без hash (как сейчас)", map[string]bool{"hash": true}},
+		{"без hash и signature", map[string]bool{"hash": true, "signature": true}},
 	} {
 		var pairs []string
 		for _, k := range keys {

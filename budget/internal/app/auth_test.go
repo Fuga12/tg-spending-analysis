@@ -196,15 +196,52 @@ func TestVerifyInitDataNeedsUser(t *testing.T) {
 	})
 }
 
-func TestVerifyInitDataIgnoresThirdPartySignature(t *testing.T) {
-	// Telegram добавляет поле signature для сторонней проверки. В строку
-	// подписи бота оно не входит, и его наличие не должно всё ломать.
+func TestVerifyInitDataAcceptsRealFieldSet(t *testing.T) {
+	// Набор полей ровно такой, какой присылает Telegram на живом Mini App:
+	// auth_date, query_id, signature, user. Тесты выше подписывали данные
+	// того же вида, что и проверяли, — они поймали бы поломку алгоритма, но
+	// не расхождение с тем, что Telegram шлёт на самом деле. Именно сюда
+	// однажды и провалилось: signature выбрасывался из проверочной строки,
+	// и приложение не пускало никого.
+	now := time.Now()
+	fields := map[string]string{
+		"auth_date": strconv.FormatInt(now.Unix(), 10),
+		"query_id":  "AAHdF6IQAAAAAN0Xoh0AbcDef",
+		"signature": "abcDEF123_-xyz",
+		"user":      `{"id":777,"first_name":"Илья","last_name":"Петров","username":"ilya"}`,
+	}
+	data := signInitData(t, testToken, fields)
+
+	user, err := VerifyInitData(data, testToken, now)
+	if err != nil {
+		t.Fatalf("живой набор полей должен приниматься: %v", err)
+	}
+	if user.ID != 777 {
+		t.Errorf("пользователь = %+v, ожидался 777", user)
+	}
+}
+
+func TestSignatureIsPartOfTheCheckString(t *testing.T) {
+	// Прямая проверка того самого правила: подменённый signature обязан
+	// ломать подпись. Если он снова окажется вне проверочной строки, этот
+	// тест покраснеет.
 	now := time.Now()
 	fields := validFields(now)
-	data := signInitData(t, testToken, fields) + "&signature=" + url.QueryEscape("abc.def")
+	fields["signature"] = "настоящая"
+	data := signInitData(t, testToken, fields)
 
 	if _, err := VerifyInitData(data, testToken, now); err != nil {
-		t.Errorf("поле signature не должно мешать проверке: %v", err)
+		t.Fatalf("подписанные данные должны приниматься: %v", err)
+	}
+
+	forged := strings.Replace(data,
+		"signature="+url.QueryEscape("настоящая"),
+		"signature="+url.QueryEscape("подменённая"), 1)
+	if forged == data {
+		t.Fatal("подмена не удалась — тест ничего не проверяет")
+	}
+	if _, err := VerifyInitData(forged, testToken, now); !errors.Is(err, ErrBadSignature) {
+		t.Errorf("ошибка = %v, ожидалось ErrBadSignature: signature входит в строку", err)
 	}
 }
 
