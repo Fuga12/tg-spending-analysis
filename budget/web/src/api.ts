@@ -72,7 +72,9 @@ export type MonthReport = {
   review: number;
 };
 
-export type DayPoint = { day: string; amount: string };
+/** День месяца с раскладкой по категориям: ключ — id категории, «0» —
+ *  трата без категории. */
+export type DayPoint = { day: string; amount: string; by: Record<string, string> };
 export type MonthPoint = { year: number; month: number; amount: string };
 
 /** Отказ сервера с текстом, который можно показать человеку. */

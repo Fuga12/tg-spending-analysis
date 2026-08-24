@@ -100,3 +100,46 @@ func (g *GroupStore) TotalExpenses(ctx context.Context, from, to time.Time) (dec
 	}
 	return decimal.NewFromString(amount)
 }
+
+// DayCategory — сколько ушло в категорию за один день.
+type DayCategory struct {
+	Day        string
+	CategoryID *int32
+	Amount     decimal.Decimal
+}
+
+// DailyByCategory раскладывает расходы по дням и категориям одним запросом.
+//
+// Отдельными запросами на каждый день это было бы тридцать round-trip ради
+// одного графика. Группировка в таймзоне бота: если резать по UTC, вечерние
+// траты уезжают на день вперёд.
+func (g *GroupStore) DailyByCategory(ctx context.Context, from, to time.Time, tz string) ([]DayCategory, error) {
+	rows, err := g.pool.Query(ctx, `
+		select to_char((spent_at at time zone $4)::date, 'YYYY-MM-DD') as day,
+		       category_id, sum(amount)::text
+		from transactions
+		where group_id = $1 and deleted_at is null and kind = 'expense'
+		  and spent_at >= $2 and spent_at < $3
+		group by day, category_id
+		order by day`, g.groupID, from, to, tz)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []DayCategory
+	for rows.Next() {
+		var (
+			d      DayCategory
+			amount string
+		)
+		if err := rows.Scan(&d.Day, &d.CategoryID, &amount); err != nil {
+			return nil, err
+		}
+		if d.Amount, err = decimal.NewFromString(amount); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}

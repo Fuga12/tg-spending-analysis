@@ -287,6 +287,17 @@ func (s *Server) monthReport(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// dayJSON — расход за день вместе с раскладкой по категориям.
+//
+// Раскладка едет тем же запросом, что и итог дня: график по дням без неё
+// показывает, когда потратили, но не на что, а это половина вопроса.
+type dayJSON struct {
+	Day    string `json:"day"`
+	Amount string `json:"amount"`
+	// By — категория (нулевой ключ, если её нет) → сумма за этот день.
+	By map[string]string `json:"by"`
+}
+
 func (s *Server) dayReport(w http.ResponseWriter, r *http.Request) {
 	inGroup(s, w, r, func(c *caller) {
 		year, month, err := monthFrom(r, s.cfg.TZ)
@@ -296,14 +307,36 @@ func (s *Server) dayReport(w http.ResponseWriter, r *http.Request) {
 		}
 		from, to := report.MonthRange(year, month, s.cfg.TZ)
 
-		days, err := c.group.DailyExpenses(r.Context(), from, to, s.cfg.TZ.String())
+		parts, err := c.group.DailyByCategory(r.Context(), from, to, s.cfg.TZ.String())
 		if err != nil {
 			s.oops(w, "расходы по дням", err)
 			return
 		}
-		out := make([]map[string]string, 0, len(days))
-		for _, d := range days {
-			out = append(out, map[string]string{"day": d.Day, "amount": d.Amount.String()})
+
+		// Порядок дней задаёт запрос; здесь только склейка, поэтому отдельный
+		// список ключей вместо обхода map — иначе дни в ответе перемешаются.
+		byDay := map[string]*dayJSON{}
+		order := make([]string, 0, len(parts))
+		for _, p := range parts {
+			d, seen := byDay[p.Day]
+			if !seen {
+				d = &dayJSON{Day: p.Day, Amount: "0", By: map[string]string{}}
+				byDay[p.Day] = d
+				order = append(order, p.Day)
+			}
+			key := "0"
+			if p.CategoryID != nil {
+				key = strconv.Itoa(int(*p.CategoryID))
+			}
+			d.By[key] = p.Amount.String()
+
+			total, _ := parseAmount(d.Amount)
+			d.Amount = total.Add(p.Amount).String()
+		}
+
+		out := make([]dayJSON, 0, len(order))
+		for _, day := range order {
+			out = append(out, *byDay[day])
 		}
 		ok(w, out)
 	})

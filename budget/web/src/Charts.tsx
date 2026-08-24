@@ -61,18 +61,42 @@ export function MonthStrip({
   );
 }
 
+/** Сколько категорий показывать цветом. Дальше глаз не различает, и
+ *  остальное честнее свести в одну серую долю, чем красить в седьмой оттенок. */
+const TOP_DAY_CATEGORIES = 5;
+
 /**
- * Дни столбиками. Тапа нет: 31 столбик на ширину телефона — это 10 пикселей
- * на шаг, палец накрывает четыре сразу. График обзорный, числа есть в списке.
+ * Расход по дням, разложенный по категориям.
+ *
+ * Столбик отвечает «когда», цвет — «на что». Порознь это два графика, из
+ * которых первый не объясняет всплески, а второй не показывает, когда они
+ * случились.
+ *
+ * Категорий цветом ровно пять: на ширине телефона день — это десять
+ * пикселей, и делить их на четырнадцать долей значит рисовать шум. Остальное
+ * уходит в серое «прочее» — доля, а не выдуманный оттенок.
  */
-export function DayColumns({ days, today }: { days: DayPoint[]; today: string }) {
-  // Пустой месяц графиком не нарисуешь, но одного дня уже достаточно: он
-  // отвечает на вопрос «когда именно». Раньше порог был в три дня, и в
-  // свежей группе не показывалось вообще ничего.
+export function DayCategories({
+  days,
+  categories,
+  today,
+  onPick,
+}: {
+  days: DayPoint[];
+  categories: Line[];
+  today: string;
+  onPick?: (categoryID: number) => void;
+}) {
   if (days.every((d) => num(d.amount) <= 0)) return null;
+
+  // Порядок берётся из месячного отчёта: он уже отсортирован по убыванию,
+  // и цвет категории не скачет от дня к дню.
+  const top = categories.filter((c) => c.id !== 0).slice(0, TOP_DAY_CATEGORIES);
+  const colorOf = new Map(top.map((c, i) => [String(c.id), `cat-${i + 1}`]));
 
   const max = Math.max(...days.map((d) => num(d.amount)), 1);
   const peak = days.reduce((a, b) => (num(a.amount) >= num(b.amount) ? a : b));
+  const hasRest = categories.some((c) => !colorOf.has(String(c.id)));
 
   return (
     <Section
@@ -84,29 +108,77 @@ export function DayColumns({ days, today }: { days: DayPoint[]; today: string })
       }
     >
       <div className="days">
-        {days.map((d) => {
-          const value = num(d.amount);
-          return (
+        {days.map((d) => (
+          <span
+            key={d.day}
+            className={`days__col${d.day === today ? " days__col--today" : ""}`}
+            title={`${Number(d.day.slice(8))}: ${money(d.amount)}`}
+          >
+            {/* Столбик собирается снизу вверх долями категорий. Высота всего
+                столбика — доля от самого дорогого дня, а не от месяца:
+                иначе в месяце с одной крупной тратой все остальные дни
+                вырождаются в полоску. */}
             <span
-              key={d.day}
-              className={`days__col${d.day === today ? " days__col--today" : ""}`}
-              title={`${Number(d.day.slice(8))}: ${money(d.amount)}`}
+              className="days__stack"
+              style={{ height: `${Math.max((num(d.amount) / max) * 100, num(d.amount) > 0 ? 4 : 0)}%` }}
             >
-              <span
-                className="days__fill"
-                style={{ height: `${Math.max((value / max) * 100, value > 0 ? 4 : 0)}%` }}
-              />
+              {segmentsOf(d, colorOf).map((seg) => (
+                <span
+                  key={seg.key}
+                  className={`days__part ${seg.cls}`}
+                  style={{ flexGrow: seg.value }}
+                />
+              ))}
             </span>
-          );
-        })}
+          </span>
+        ))}
       </div>
       <div className="days__axis">
         {[1, 8, 15, 22, 29].map((d) => (
           <span key={d}>{d}</span>
         ))}
       </div>
+
+      <div className="legend">
+        {top.map((c, i) => (
+          <button
+            key={c.id}
+            className="legend__item"
+            disabled={!onPick}
+            onClick={() => onPick?.(c.id)}
+          >
+            <i className={`legend__dot cat-${i + 1}`} />
+            <span className="legend__name">{c.name}</span>
+            <b className="amount">{money(c.amount)}</b>
+          </button>
+        ))}
+        {hasRest && (
+          <span className="legend__item legend__item--flat">
+            <i className="legend__dot cat-rest" />
+            <span className="legend__name">прочее</span>
+          </span>
+        )}
+      </div>
     </Section>
   );
+}
+
+/** Доли одного дня, в том же порядке, что и легенда: иначе цвета в соседних
+ *  столбиках стоят на разной высоте и полосы читаются как рябь. */
+function segmentsOf(day: DayPoint, colorOf: Map<string, string>) {
+  const out: { key: string; cls: string; value: number }[] = [];
+  let rest = 0;
+
+  for (const [id, amount] of Object.entries(day.by)) {
+    const value = num(amount);
+    if (value <= 0) continue;
+    const cls = colorOf.get(id);
+    if (cls) out.push({ key: id, cls, value });
+    else rest += value;
+  }
+  out.sort((a, b) => a.cls.localeCompare(b.cls));
+  if (rest > 0) out.push({ key: "rest", cls: "cat-rest", value: rest });
+  return out;
 }
 
 /** Полоса 100%-стека с подписями под ней. */
@@ -173,10 +245,14 @@ export function CategoryBars({
   lines,
   activeID,
   onPick,
+  deltas,
 }: {
   lines: Line[];
   activeID: number;
   onPick: (id: number) => void;
+  /** Насколько категория изменилась к прошлому месяцу. Это единственный
+   *  вопрос, который вообще задают статистике: что подорожало. */
+  deltas?: Map<string, number>;
 }) {
   const [expanded, setExpanded] = useState(false);
   if (lines.length === 0) return null;
@@ -204,6 +280,7 @@ export function CategoryBars({
               <span className="bar__fill" style={{ width: `${(num(l.amount) / max) * 100}%` }} />
             </span>
             <span className="bar__value">{money(l.amount)}</span>
+            {deltas && <span className="bar__delta">{deltaLabel(deltas.get(l.name))}</span>}
           </span>
         </button>
       ))}
@@ -218,98 +295,16 @@ export function CategoryBars({
 }
 
 
-/**
- * Накопленный расход: сколько потрачено с начала месяца ко дню N.
- *
- * Главный вопрос к тратам — не «сколько вышло», а «идём мы с опережением или
- * нет». Столбики по дням на него не отвечают: глазами суммировать тридцать
- * штук невозможно. Накопленная кривая рядом с прошлым месяцем отвечает сразу
- * и показывает, в какой момент разошлось.
- *
- * Текущий месяц рисуется только до сегодня. Дотягивать линию до тридцать
- * первого числа значило бы показывать, что расходы вдруг остановились.
- */
-export function SpendingTrend({
-  current,
-  previous,
-  year,
-  month,
-  today,
-}: {
-  current: DayPoint[];
-  previous: DayPoint[];
-  year: number;
-  month: number;
-  today: string;
-}) {
-  const [ty, tm, td] = today.split("-").map(Number);
-  const inThisMonth = ty === year && tm === month;
-  const lastDay = daysInMonth(year, month);
-  const upto = inThisMonth ? Math.min(td, lastDay) : lastDay;
-
-  const cur = cumulative(current, upto);
-  const prev = cumulative(previous, daysInMonth(month === 1 ? year - 1 : year, month === 1 ? 12 : month - 1));
-
-  if (cur.length === 0 || cur[cur.length - 1] === 0) return null;
-
-  const max = Math.max(...cur, ...prev, 1);
-  const W = 320;
-  const H = 110;
-
-  // Обе кривые на одной шкале дней: сравнивать 15-е с 15-м, а не долю месяца
-  // с долей — в феврале она означала бы другой день.
-  const scale = Math.max(lastDay, prev.length, 1);
-  const path = (values: number[]) =>
-    values
-      .map((v, i) => {
-        const x = (i / Math.max(scale - 1, 1)) * W;
-        const y = H - (v / max) * H;
-        return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-      })
-      .join(" ");
-
-  const diff = prev.length > 0 ? cur[cur.length - 1] - (prev[Math.min(upto, prev.length) - 1] ?? 0) : 0;
-
+/** Разница с прошлым месяцем: «+840 ₽», «−2 200 ₽» или прочерк. */
+function deltaLabel(delta: number | undefined) {
+  if (delta === undefined || Math.round(delta) === 0) {
+    return <span className="delta delta--flat">—</span>;
+  }
+  const grew = delta > 0;
   return (
-    <Section
-      header="Накопленный расход"
-      footer={
-        prev.length === 0
-          ? "За прошлый месяц данных нет — сравнивать не с чем."
-          : diff === 0
-            ? "К этому дню — ровно как в прошлом месяце."
-            : `К этому дню ${diff > 0 ? "больше" : "меньше"} прошлого месяца на ${money(String(Math.abs(Math.round(diff))))}`
-      }
-    >
-      <div className="trend">
-        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="trend__svg">
-          {prev.length > 0 && <path className="trend__prev" d={path(prev)} />}
-          <path className="trend__cur" d={path(cur)} />
-        </svg>
-        <div className="trend__legend">
-          <span><i className="trend__mark trend__mark--cur" />этот месяц</span>
-          {prev.length > 0 && (
-            <span><i className="trend__mark trend__mark--prev" />прошлый</span>
-          )}
-          <b className="amount">{money(String(Math.round(cur[cur.length - 1])))}</b>
-        </div>
-      </div>
-    </Section>
+    <span className={`delta ${grew ? "delta--up" : "delta--down"}`}>
+      {grew ? "+" : "−"}
+      {money(String(Math.abs(Math.round(delta))))}
+    </span>
   );
 }
-
-/** Нарастающий итог по дням месяца: день без трат продолжает линию, а не
- *  роняет её в ноль. */
-function cumulative(days: DayPoint[], upto: number): number[] {
-  if (upto <= 0) return [];
-  const byDay = new Map(days.map((d) => [Number(d.day.slice(8)), num(d.amount)]));
-  const out: number[] = [];
-  let sum = 0;
-  for (let d = 1; d <= upto; d++) {
-    sum += byDay.get(d) ?? 0;
-    out.push(sum);
-  }
-  return out.some((v) => v > 0) ? out : [];
-}
-
-const daysInMonth = (year: number, month: number) => new Date(year, month, 0).getDate();

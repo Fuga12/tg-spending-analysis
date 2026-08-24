@@ -431,3 +431,66 @@ func mustInsert(t *testing.T, g *storage.GroupStore, payer int64, amount, descri
 }
 
 func itoa(v int64) string { return strconv.FormatInt(v, 10) }
+
+func TestDayReportBreaksDownByCategory(t *testing.T) {
+	// График по дням отвечает «когда», раскладка по категориям — «на что».
+	// Порознь первый не объясняет всплески, а второй не показывает, когда
+	// они случились, поэтому едут одним запросом.
+	ts := newTestServer(t)
+	ctx := context.Background()
+
+	cats, _ := ts.group.Categories(ctx)
+	food, taxi := cats[0].ID, cats[4].ID
+
+	now := time.Now().UTC()
+	day := time.Date(now.Year(), now.Month(), 1, 12, 0, 0, 0, time.UTC)
+	spend := func(cat int32, amount string, at time.Time) {
+		t.Helper()
+		if _, err := ts.group.InsertTransaction(ctx, storage.Transaction{
+			PayerMemberID: ts.members[0].ID, Kind: storage.KindExpense,
+			Amount: decimal.RequireFromString(amount), Description: "тест",
+			CategoryID: &cat, RawText: "тест", SpentAt: at,
+		}); err != nil {
+			t.Fatalf("вставка: %v", err)
+		}
+	}
+	spend(food, "1000", day)
+	spend(food, "500", day)
+	spend(taxi, "300", day)
+
+	days := decodeBody[[]dayJSON](t, ts.do(t, 1, "GET", "/api/report/days", ""))
+	if len(days) != 1 {
+		t.Fatalf("дней %d, ожидался один: %+v", len(days), days)
+	}
+	if days[0].Amount != "1800" {
+		t.Errorf("итог дня = %s, ожидалось 1800", days[0].Amount)
+	}
+	// Траты одной категории за день складываются, а не приезжают порознь.
+	if got := days[0].By[itoa(int64(food))]; got != "1500" {
+		t.Errorf("продукты за день = %s, ожидалось 1500 (%+v)", got, days[0].By)
+	}
+	if got := days[0].By[itoa(int64(taxi))]; got != "300" {
+		t.Errorf("такси за день = %s, ожидалось 300", got)
+	}
+}
+
+func TestDayReportKeepsUncategorisedSeparate(t *testing.T) {
+	// Трата без категории — это не «прочее», а работа, которую не доделали:
+	// в раскладке она стоит под нулевым ключом и видна отдельно.
+	ts := newTestServer(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	if _, err := ts.group.InsertTransaction(ctx, storage.Transaction{
+		PayerMemberID: ts.members[0].ID, Kind: storage.KindExpense,
+		Amount: decimal.RequireFromString("700"), Description: "тест",
+		RawText: "тест", SpentAt: time.Date(now.Year(), now.Month(), 2, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("вставка: %v", err)
+	}
+
+	days := decodeBody[[]dayJSON](t, ts.do(t, 1, "GET", "/api/report/days", ""))
+	if len(days) != 1 || days[0].By["0"] != "700" {
+		t.Errorf("раскладка = %+v, ожидалось 700 под нулевым ключом", days)
+	}
+}

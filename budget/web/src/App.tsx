@@ -12,7 +12,8 @@ import {
   type TxFilter,
 } from "./api";
 import { Categories } from "./Categories";
-import { CategoryBars, DayColumns, MonthStrip, SpendingTrend, StackedBar } from "./Charts";
+import { CategoryBars, DayCategories, MonthStrip, StackedBar } from "./Charts";
+import { Pace } from "./Pace";
 import { GroupScreen, NoGroupScreen } from "./GroupScreen";
 import { money, monthName, plural } from "./format";
 import { slotClass, slotsFor } from "./slots";
@@ -39,9 +40,9 @@ export default function App() {
 
   const [report, setReport] = useState<MonthReport | null>(null);
   const [days, setDays] = useState<DayPoint[]>([]);
-  // Дни прошлого месяца нужны накопительной кривой: без второй линии она
-  // показывает сумму, но не отвечает на вопрос «это много или как обычно».
-  const [prevDays, setPrevDays] = useState<DayPoint[]>([]);
+  // Прошлый месяц целиком: из него берутся дельты категорий — что подорожало.
+  // Это единственный вопрос, который вообще задают статистике.
+  const [prevReport, setPrevReport] = useState<MonthReport | null>(null);
   const [months, setMonths] = useState<MonthPoint[]>([]);
 
   const [filter, setFilter] = useState<TxFilter>({});
@@ -80,13 +81,13 @@ export default function App() {
     Promise.all([
       api.month(period.year, period.month),
       api.days(period.year, period.month),
-      api.days(prev.year, prev.month),
+      api.month(prev.year, prev.month),
       api.months(),
     ])
-      .then(([m, d, pd, ms]) => {
+      .then(([m, d, pm, ms]) => {
         setReport(m);
         setDays(d);
-        setPrevDays(pd);
+        setPrevReport(pm);
         setMonths(ms);
       })
       .catch((e) => setError(e instanceof ApiError ? e.message : "Не смог посчитать отчёт."));
@@ -114,6 +115,14 @@ export default function App() {
     () => slotsFor(state?.members ?? [], state?.group?.member_id ?? 0),
     [state?.members, state?.group?.member_id],
   );
+
+  // Дельты по имени категории, а не по id: категорию могли переименовать,
+  // но сравнивать надо то, что человек видит сейчас.
+  const deltas = useMemo(() => {
+    if (!report || !prevReport) return undefined;
+    const was = new Map(prevReport.categories.map((c) => [c.name, Number(c.amount)]));
+    return new Map(report.categories.map((c) => [c.name, Number(c.amount) - (was.get(c.name) ?? 0)]));
+  }, [report, prevReport]);
 
   if (!state) {
     return (
@@ -165,15 +174,20 @@ export default function App() {
               </Section>
             )}
 
-            <SpendingTrend
-              current={days}
-              previous={prevDays}
+            <Pace
+              days={days}
+              total={report.total}
               year={period.year}
               month={period.month}
               today={todayISO()}
             />
 
-            <DayColumns days={days} today={todayISO()} />
+            <DayCategories
+              days={days}
+              categories={report.categories}
+              today={todayISO()}
+              onPick={(id) => drillTo({ category: id })}
+            />
 
             <StackedBar
               title="Кто платил"
@@ -201,6 +215,7 @@ export default function App() {
               lines={report.categories}
               activeID={filter.category ?? 0}
               onPick={(id) => drillTo({ category: id })}
+              deltas={deltas}
             />
           </>
         )}
