@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -23,6 +25,45 @@ type Deps struct {
 	Classifier *classify.Service
 	Breaker    *classify.Breaker
 	Budget     *classify.Budget
+}
+
+// pollTimeout — сколько Telegram держит запрос getUpdates, пока нет новых
+// сообщений. Это ожидание на его стороне, а не таймаут нашего клиента.
+const pollTimeout = 10 * time.Second
+
+// httpTimeout — потолок на один запрос к Telegram.
+//
+// Без него бот однажды замолкает навсегда, оставаясь живым и здоровым на вид.
+// У клиента telebot таймаута нет по умолчанию, а getUpdates висит на соединении
+// минутами: стоит промежуточному NAT тихо забыть про него — и запрос не
+// вернётся никогда. Ни ошибки, ни строчки в логе, процесс active, перезапусков
+// ноль, и только очередь сообщений копится на стороне Telegram.
+//
+// Обязан быть заметно больше pollTimeout, иначе рвался бы каждый нормальный
+// долгий опрос.
+const httpTimeout = 60 * time.Second
+
+// telegramClient — HTTP-клиент с настоящими таймаутами на каждом шаге.
+// Общий Timeout спасает от повисшего соединения, остальные — от зависания
+// раньше и точнее.
+func telegramClient() *http.Client {
+	return &http.Client{
+		Timeout: httpTimeout,
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout: 10 * time.Second,
+				// Мёртвое соединение обнаруживается пробами, а не по факту
+				// вечного ожидания ответа.
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout: 10 * time.Second,
+			// Больше pollTimeout: Telegram молчит ровно столько, пока копит
+			// сообщения, и это не повод обрывать запрос.
+			ResponseHeaderTimeout: pollTimeout + 30*time.Second,
+			IdleConnTimeout:       90 * time.Second,
+		},
+	}
 }
 
 // Bot — обёртка над telebot: long polling, whitelist, обработчики.
@@ -53,7 +94,8 @@ type Bot struct {
 func New(cfg *config.Config, d Deps, log *slog.Logger) (*Bot, error) {
 	tb, err := tele.NewBot(tele.Settings{
 		Token:  cfg.BotToken,
-		Poller: &tele.LongPoller{Timeout: 10 * time.Second},
+		Client: telegramClient(),
+		Poller: &tele.LongPoller{Timeout: pollTimeout},
 		OnError: func(err error, c tele.Context) {
 			log.Error("необработанная ошибка", "err", err)
 		},
